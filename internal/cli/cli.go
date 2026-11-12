@@ -88,7 +88,7 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
 	}
-	command, err := sandbox.BuildCommand(capabilities.Bubblewrap, effectiveProfile, options.Command)
+	command, err := sandbox.BuildCommand(capabilities.Bubblewrap, effectiveProfile, options.ProfilePath, options.AppID, options.Command)
 	if err != nil {
 		fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2

@@ -20,8 +20,14 @@
 - `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — exit 0; GVM вывел предупреждение о read-only stat cache в `/home/user/.gvm/.cache`.
 - Прочитан вывод `bwrap --help`; локально установлен bubblewrap 0.12.0, в его help есть `--new-session`, `--die-with-parent` и `--json-status-fd`.
 
+- F04-T02: `gofmt -w internal/sandbox/build.go internal/sandbox/profile_mounts.go internal/sandbox/home_linux.go internal/sandbox/home_other.go internal/cli/cli.go` — успешно.
+- F04-T02: `git diff --check` — без замечаний.
+- F04-T02: `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — exit 0; GVM вывел предупреждение о read-only stat cache в `/home/user/.gvm/.cache`.
+- F04-T02: просмотрена документация bubblewrap; файловые операции применяются в порядке аргументов, отсутствующие родительские каталоги для destination создаются автоматически ([man page](https://github.com/containers/bubblewrap/blob/main/bwrap.xml)).
+
 Не проверялось:
 
 - `isobox run` не запускался, поэтому реальное чтение файлов из root, передача сигналов и коды exit status не проверены в runtime.
 - Автоматические и runtime-тесты не запускались.
 - Доступность каждой необязательной системной mount-path зависит от дистрибутива; в этом окружении их набор и вызовы bwrap не исполнялись.
+- F04-T02: не запускался bwrap с реальными profile mounts/HOME; проверка реальных mount permissions, вложенных путей, приватных режимов и повторного использования HOME остаётся runtime acceptance.

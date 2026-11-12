@@ -20,10 +20,12 @@ type systemMount struct {
 	required    bool
 }
 
+const sandboxHome = "/home/isobox"
+
 // BuildCommand creates a bwrap command for the supported portion of the
-// current sandbox profile. Every host path mounted here is a fixed system
-// path and is read-only; profile mounts and HOME are added by F04-T02.
-func BuildCommand(bubblewrap string, config profile.EffectiveProfile, application []string) (*exec.Cmd, error) {
+// current sandbox profile. Host paths are limited to fixed runtime paths and
+// the mounts explicitly granted by the profile.
+func BuildCommand(bubblewrap string, config profile.EffectiveProfile, profilePath, appID string, application []string) (*exec.Cmd, error) {
 	if bubblewrap == "" {
 		return nil, fmt.Errorf("bwrap executable path is required")
 	}
@@ -34,10 +36,26 @@ func BuildCommand(bubblewrap string, config profile.EffectiveProfile, applicatio
 		return nil, err
 	}
 
-	mounts, err := availableSystemMounts()
+	systemMounts, err := availableSystemMounts()
 	if err != nil {
 		return nil, err
 	}
+	profileMounts, err := resolveProfileMounts(config.Mounts)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateProfileMountTargets(profileMounts); err != nil {
+		return nil, err
+	}
+	homeSource, err := resolveHome(config.HomePath, profilePath, appID)
+	if err != nil {
+		return nil, err
+	}
+	profileMounts = append(profileMounts, profileMount{source: homeSource, target: sandboxHome, writable: true})
+	if err := validateProfileMountTargets(profileMounts); err != nil {
+		return nil, err
+	}
+	sortProfileMounts(profileMounts)
 
 	args := []string{
 		"--unshare-user",
@@ -48,7 +66,7 @@ func BuildCommand(bubblewrap string, config profile.EffectiveProfile, applicatio
 		"--new-session",
 		"--die-with-parent",
 	}
-	for _, mount := range mounts {
+	for _, mount := range systemMounts {
 		args = append(args, "--ro-bind", mount.source, mount.destination)
 	}
 	args = append(args,
@@ -59,9 +77,18 @@ func BuildCommand(bubblewrap string, config profile.EffectiveProfile, applicatio
 		"--perms", "01777", "--tmpfs", "/var/tmp",
 		"--dir", "/home",
 		"--dir", "/root",
+	)
+	for _, mount := range profileMounts {
+		option := "--bind"
+		if !mount.writable {
+			option = "--ro-bind"
+		}
+		args = append(args, option, mount.source, mount.target)
+	}
+	args = append(args,
 		"--clearenv",
 		"--setenv", "PATH", sandboxPath,
-		"--setenv", "HOME", "/tmp",
+		"--setenv", "HOME", sandboxHome,
 		"--setenv", "TMPDIR", "/tmp",
 		"--unsetenv", "PWD",
 		"--chdir", "/",
@@ -75,12 +102,6 @@ func BuildCommand(bubblewrap string, config profile.EffectiveProfile, applicatio
 }
 
 func validateSupportedProfile(config profile.EffectiveProfile) error {
-	if config.HomePath != "" {
-		return fmt.Errorf("profile.home_path is not supported by this runtime yet; isolated HOME support is added in F04-T02")
-	}
-	if len(config.Mounts) != 0 {
-		return fmt.Errorf("profile.mount is not supported by this runtime yet; explicit mounts are added in F04-T02")
-	}
 	if config.GUI.Wayland || config.GUI.X11 || config.GUI.Audio || config.GUI.GPU || config.GUI.Desktop {
 		return fmt.Errorf("profile.gui requests access not supported by this runtime yet; explicit GUI grants are added in F04-T03")
 	}
