@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"sort"
 
 	"github.com/arwos/isobox/internal/profile"
 )
@@ -47,6 +48,14 @@ func BuildCommand(bubblewrap string, config profile.EffectiveProfile, profilePat
 	if err := validateProfileMountTargets(profileMounts); err != nil {
 		return nil, err
 	}
+	gui, err := resolveGUI(config.GUI)
+	if err != nil {
+		return nil, err
+	}
+	profileMounts = append(profileMounts, gui.mounts...)
+	if err := validateProfileMountTargets(profileMounts); err != nil {
+		return nil, err
+	}
 	homeSource, err := resolveHome(config.HomePath, profilePath, appID)
 	if err != nil {
 		return nil, err
@@ -78,9 +87,15 @@ func BuildCommand(bubblewrap string, config profile.EffectiveProfile, profilePat
 		"--dir", "/home",
 		"--dir", "/root",
 	)
+	if gui.runtimeDir {
+		args = append(args, "--perms", "0700", "--dir", sandboxGUIRuntime)
+	}
 	for _, mount := range profileMounts {
 		option := "--bind"
-		if !mount.writable {
+		switch {
+		case mount.device:
+			option = "--dev-bind"
+		case !mount.writable:
 			option = "--ro-bind"
 		}
 		args = append(args, option, mount.source, mount.target)
@@ -90,6 +105,16 @@ func BuildCommand(bubblewrap string, config profile.EffectiveProfile, profilePat
 		"--setenv", "PATH", sandboxPath,
 		"--setenv", "HOME", sandboxHome,
 		"--setenv", "TMPDIR", "/tmp",
+	)
+	environment := make([]string, 0, len(gui.environment))
+	for name := range gui.environment {
+		environment = append(environment, name)
+	}
+	sort.Strings(environment)
+	for _, name := range environment {
+		args = append(args, "--setenv", name, gui.environment[name])
+	}
+	args = append(args,
 		"--unsetenv", "PWD",
 		"--chdir", "/",
 		"--setenv", "PWD", "/",
@@ -102,9 +127,6 @@ func BuildCommand(bubblewrap string, config profile.EffectiveProfile, profilePat
 }
 
 func validateSupportedProfile(config profile.EffectiveProfile) error {
-	if config.GUI.Wayland || config.GUI.X11 || config.GUI.Audio || config.GUI.GPU || config.GUI.Desktop {
-		return fmt.Errorf("profile.gui requests access not supported by this runtime yet; explicit GUI grants are added in F04-T03")
-	}
 	if config.NetworkMode != profile.NetworkModeOff {
 		return fmt.Errorf("profile.network.mode=%q is not supported by the sandbox runtime yet; refusing to launch with different network semantics until F05/F06 is implemented", config.NetworkMode)
 	}

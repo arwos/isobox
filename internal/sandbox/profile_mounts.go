@@ -14,6 +14,7 @@ type profileMount struct {
 	source   string
 	target   string
 	writable bool
+	device   bool
 }
 
 func resolveProfileMounts(configured []profile.Mount) ([]profileMount, error) {
@@ -69,10 +70,10 @@ func validateProfileMountTargets(mounts []profileMount) error {
 
 func isReservedMountTarget(target string) bool {
 	switch target {
-	case "/proc", "/dev", "/tmp", "/run", "/var/tmp", "/root", "/home", sandboxHome:
+	case "/proc", "/dev", "/tmp", "/run", "/var/tmp", "/root", "/home", sandboxHome, sandboxGUIRuntime, "/tmp/.X11-unix":
 		return true
 	default:
-		return false
+		return strings.HasPrefix(target, sandboxGUIRuntime+string(filepath.Separator)) || strings.HasPrefix(target, "/tmp/.X11-unix"+string(filepath.Separator))
 	}
 }
 

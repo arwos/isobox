@@ -1,6 +1,6 @@
 # Архитектура и продуктовый план isobox
 
-Статус: roadmap согласован пользователем 2026-11-12. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация, host preflight с выбором совместимого сетевого backend, построение эффективных настроек и bwrap runtime для профилей с сетью `off`, включая профильные mounts и изолированный HOME. GUI и direct/proxy network runtime ещё не реализованы.
+Статус: roadmap согласован пользователем 2026-11-12. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация, host preflight с выбором совместимого сетевого backend и bwrap runtime для сети `off`, включая профильные mounts, изолированный HOME и ручные GUI grants. Direct/proxy network runtime, limits и desktop system integration ещё не реализованы.
 
 ## Назначение и границы
 
@@ -58,7 +58,7 @@ internal/limits/        применение лимитов
 internal/integration/   необязательные desktop/system defaults
 ```
 
-`cmd/isobox/`, `internal/cli/`, `internal/profile/`, `internal/preflight/` и `internal/sandbox/` содержат CLI, схему документов, host capability checks и bwrap root с явными профильными mounts и изолированным HOME. Preflight предпочитает pasta и допускает slirp4netns только при подтверждённых параметрах для конкретного профиля; режимы без доказанной сетевой гарантии завершаются отказом. GUI, network/proxy/limits/integration остаются отдельными roadmap задачами. Не выбирать TUN/IP-stack зависимость до проверки поддержки TCP/UDP, lifecycle, лицензии и rootless-сценария.
+`cmd/isobox/`, `internal/cli/`, `internal/profile/`, `internal/preflight/` и `internal/sandbox/` содержат CLI, схему документов, host capability checks и bwrap root с явными профильными mounts, изолированным HOME и ручными GUI grants. Preflight предпочитает pasta и допускает slirp4netns только при подтверждённых параметрах для конкретного профиля; режимы без доказанной сетевой гарантии завершаются отказом. Network/proxy/limits/system integration остаются отдельными roadmap задачами. Не выбирать TUN/IP-stack зависимость до проверки поддержки TCP/UDP, lifecycle, лицензии и rootless-сценария.
 
 ## Зависимости и проверенные источники
 

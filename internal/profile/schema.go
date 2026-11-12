@@ -61,6 +61,8 @@ type PortRule struct {
 }
 
 // GUIAccess contains explicit grants for desktop integration surfaces.
+// Desktop grants the host user's session D-Bus; it does not imply portal
+// handling or access to the system bus.
 type GUIAccess struct {
 	Wayland bool `unic:"wayland,default=false"`
 	X11     bool `unic:"x11,default=false"`
