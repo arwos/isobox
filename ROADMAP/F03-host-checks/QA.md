@@ -10,4 +10,16 @@
 
 ## Выполнение
 
-Проверки не запускались: это планирование, реализации ещё нет.
+Проверено:
+
+- `gofmt -w internal/preflight/preflight.go internal/preflight/probe_linux.go internal/preflight/probe_other.go internal/cli/cli.go cmd/isobox/main.go` — успешно.
+- `git diff --check` — без замечаний.
+- `go build ./...` — exit 0; GVM вывел предупреждение о записи stat cache в read-only `/home/user/.gvm/.cache`.
+- В текущей среде `bwrap`, `pasta` и `slirp4netns` найдены через `PATH`; `/dev/net/tun` отсутствует.
+
+Не запускалось:
+
+- `isobox run` не запускался, поэтому фактические namespace/TUN-пробы не подтверждены. Ожидаемое отсутствие `/dev/net/tun` означает, что proxy mode здесь должен закрываться отказом.
+- Автоматические тесты не добавлялись и не запускались.
+
+Сборка подтверждает только компиляцию; она не доказывает возможность создавать namespaces/TUN на целевой системе.

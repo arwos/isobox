@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/arwos/isobox/internal/preflight"
 	"github.com/arwos/isobox/internal/profile"
 )
 
@@ -76,7 +77,12 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
 	}
-	if _, err = profile.ResolveProfile(appProfile, profile.DefaultSettings()); err != nil {
+	effectiveProfile, err := profile.ResolveProfile(appProfile, profile.DefaultSettings())
+	if err != nil {
+		fmt.Fprintf(stderr, "isobox run: %v\n", err)
+		return 2
+	}
+	if _, err = preflight.Check(effectiveProfile); err != nil {
 		fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
 	}

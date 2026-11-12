@@ -1,6 +1,6 @@
 # Архитектура и продуктовый план isobox
 
-Статус: roadmap согласован пользователем 2026-11-12. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация и построение эффективных настроек. Sandbox/network runtime пока не реализованы.
+Статус: roadmap согласован пользователем 2026-11-12. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация, host preflight и построение эффективных настроек. Sandbox/network runtime пока не реализованы.
 
 ## Назначение и границы
 
@@ -58,7 +58,7 @@ internal/limits/        применение лимитов
 internal/integration/   необязательные desktop/system defaults
 ```
 
-`cmd/isobox/`, `internal/cli/` и `internal/profile/` уже содержат bootstrap CLI и схему документов. Остальные пакеты планируются. Не выбирать TUN/IP-stack зависимость до проверки поддержки TCP/UDP, lifecycle, лицензии и rootless-сценария.
+`cmd/isobox/`, `internal/cli/`, `internal/profile/` и `internal/preflight/` содержат bootstrap CLI, схему документов и host capability checks. Sandbox/network/proxy/limits/integration пакеты планируются. Не выбирать TUN/IP-stack зависимость до проверки поддержки TCP/UDP, lifecycle, лицензии и rootless-сценария.
 
 ## Зависимости и проверенные источники
 
