@@ -9,4 +9,13 @@
 
 ## Выполнение
 
-Проверки не запускались: это планирование, реализации ещё нет.
+Проверено:
+
+- `gofmt -w internal/profile/schema.go` — успешно.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — exit 0; GVM вывел предупреждение о недоступном stat cache в read-only `/home/user/.gvm/.cache`.
+- `git diff --check` — без замечаний.
+
+Не запускалось:
+
+- UNIC decode/round-trip для значений по умолчанию и nested blocks; это проверяется задачей F02-T02 после добавления parser.
+- Тесты не добавлялись и не запускались.
