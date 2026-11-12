@@ -22,9 +22,9 @@ func TestScopeProperties(t *testing.T) {
 		{
 			name:    "all controllers",
 			request: profile.ResourceLimits{CPUQuotaPercent: 125, MemoryBytes: 1 << 20, ProcessCount: 8},
-			want:    []string{"CPUQuota=125%", "MemoryMax=1048576", "TasksMax=9"},
+			want:    []string{"CPUQuota=125%", "MemoryMax=1048576", "TasksMax=10"},
 		},
-		{name: "process count reserves supervisor", request: profile.ResourceLimits{ProcessCount: 1}, want: []string{"TasksMax=2"}},
+		{name: "process count reserves both bwrap tasks", request: profile.ResourceLimits{ProcessCount: 1}, want: []string{"TasksMax=3"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -40,9 +40,11 @@ func TestScopeProperties(t *testing.T) {
 }
 
 func TestScopePropertiesRejectsProcessCountOverflow(t *testing.T) {
-	_, err := ScopeProperties(profile.ResourceLimits{ProcessCount: ^uint64(0)})
-	if err == nil || !strings.Contains(err.Error(), "too large") {
-		t.Fatalf("ScopeProperties() error = %v, want process-count overflow", err)
+	for _, count := range []uint64{^uint64(0) - 1, ^uint64(0)} {
+		_, err := ScopeProperties(profile.ResourceLimits{ProcessCount: count})
+		if err == nil || !strings.Contains(err.Error(), "too large") {
+			t.Fatalf("ScopeProperties(process_count=%d) error = %v, want process-count overflow", count, err)
+		}
 	}
 }
 

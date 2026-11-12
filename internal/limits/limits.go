@@ -9,6 +9,8 @@ import (
 	"github.com/arwos/isobox/internal/profile"
 )
 
+const bwrapSupervisorTasks = 2
+
 // Any reports whether a profile asks isobox to enforce at least one limit.
 func Any(request profile.ResourceLimits) bool {
 	return NeedsCgroup(request) || request.OpenFiles != 0
@@ -20,8 +22,9 @@ func NeedsCgroup(request profile.ResourceLimits) bool {
 }
 
 // ScopeProperties returns systemd resource-control assignments for a scope.
-// systemd's task counter also includes bwrap's namespace supervisor, so reserve
-// one task for that process while keeping the requested budget for the app.
+// systemd's task counter includes the outer bwrap monitor and the inner bwrap
+// process that owns the PID namespace. Reserve both while keeping the requested
+// budget for application processes and threads.
 func ScopeProperties(request profile.ResourceLimits) ([]string, error) {
 	var properties []string
 	if request.CPUQuotaPercent != 0 {
@@ -31,10 +34,10 @@ func ScopeProperties(request profile.ResourceLimits) ([]string, error) {
 		properties = append(properties, "MemoryMax="+strconv.FormatUint(request.MemoryBytes, 10))
 	}
 	if request.ProcessCount != 0 {
-		if request.ProcessCount == ^uint64(0) {
-			return nil, fmt.Errorf("profile limit process_count is too large to reserve a task for the bwrap supervisor")
+		if request.ProcessCount > ^uint64(0)-bwrapSupervisorTasks {
+			return nil, fmt.Errorf("profile limit process_count is too large to reserve %d tasks for bwrap supervisors", bwrapSupervisorTasks)
 		}
-		properties = append(properties, "TasksMax="+strconv.FormatUint(request.ProcessCount+1, 10))
+		properties = append(properties, "TasksMax="+strconv.FormatUint(request.ProcessCount+bwrapSupervisorTasks, 10))
 	}
 	return properties, nil
 }

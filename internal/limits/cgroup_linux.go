@@ -168,13 +168,13 @@ func VerifyCgroupPID(pid int, request profile.ResourceLimits) error {
 			if err := verifyOwnNumericLimit(cgroupDir, "pids.max", expectedTasks, "process_count"); err != nil {
 				return err
 			}
-			if err := verifyParentNumericLimits(ancestors[1:], "pids.max", expectedTasks, "process_count plus bwrap supervisor"); err != nil {
+			if err := verifyParentNumericLimits(ancestors[1:], "pids.max", expectedTasks, "process_count plus bwrap supervisors"); err != nil {
 				return err
 			}
 		}
 	}
-	if expectedTasks != 0 && request.ProcessCount != 0 && expectedTasks != request.ProcessCount+1 {
-		return fmt.Errorf("effective TasksMax=%d does not reserve exactly one bwrap supervisor task for profile process_count=%d", expectedTasks, request.ProcessCount)
+	if expectedTasks != 0 && request.ProcessCount != 0 && expectedTasks != request.ProcessCount+bwrapSupervisorTasks {
+		return fmt.Errorf("effective TasksMax=%d does not reserve exactly %d bwrap supervisor tasks for profile process_count=%d", expectedTasks, bwrapSupervisorTasks, request.ProcessCount)
 	}
 	return nil
 }

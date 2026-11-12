@@ -1,22 +1,29 @@
 # F07 QA
 
-## Планируемые сценарии
+## Приёмочные сценарии
 
-- CPU, memory, process-count и open-file limit наблюдаемо ограничивают приложение.
-- Каждый лимит по отдельности отсутствует/запрошен; отсутствие не меняет незапрошенные ограничения.
-- Ограничение невозможно применить, превышает доступный parent cgroup или механизм недоступен: приложение не запускается.
-- Проверить, что дочерние процессы приложения остаются в той же группе лимитов.
-- Проверить cleanup cgroup/scope после нормального выхода, сигнала и аварии запуска.
+- CPU, memory, число kernel tasks и открытые файлы ограничиваются точно по профилю.
+- `process_count` включает процессы и потоки приложения; служебные процессы bwrap не расходуют его бюджет.
+- Незаявленный дополнительный task запрещён cgroup лимитом.
+- Отсутствующий или недостаточный механизм лимитов блокирует приложение до запуска.
+- Transient scope удаляется после нормального завершения приложения.
 
-## Выполнение
+## Выполнено
 
-- `gofmt -w internal/cli/cli.go internal/preflight/preflight.go internal/sandbox/build.go internal/sandbox/run_linux.go internal/sandbox/run_other.go internal/limits/limits.go internal/limits/limits_other.go internal/limits/cgroup_linux.go internal/limits/cgroup_linux_test.go` — успешно.
-- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — успешно; Go вывел предупреждение, что GVM stat cache недоступен для записи из-за read-only `/home/user/.gvm`.
-- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./internal/limits` — успешно; unit-проверки покрывают properties, переполнение, парсинг quota/cpuset и отказ при более строгих parent limits.
-- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./...` — успешно.
+- `gofmt` для `internal/limits/*.go` — успешно.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./internal/limits` — успешно после поправки резерва `TasksMax`; проверяются cgroup properties, overflow, парсинг quota/cpuset и отказ при более строгих parent limits.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./...` — успешно после всех изменений F07.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — успешно; GVM вывел предупреждение о недоступном stat cache в read-only `/home/user/.gvm`, код возврата 0.
 - `git diff --check` — успешно.
-- `systemctl --user show-environment` — runtime-проверка пользовательской шины недоступна: `Operation not permitted`.
-- `systemd-run --user --scope --quiet --property=CPUQuota=50% -- /usr/bin/true` — отказ: `Failed to connect to user scope bus via local transport: Operation not permitted`.
-- `/proc/self/mountinfo` и `findmnt -no OPTIONS /sys/fs/cgroup` — cgroup v2 виден, но mount options включают `ro`; control files `cpu.max`, `memory.max` и `pids.max` в доступном mount root отсутствуют.
+- Сборка бинарного файла для live-приёмки: `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build -o /tmp/isobox-f07-live/isobox ./cmd/isobox` — успешно. GVM сообщил о недоступном для записи stat cache в read-only `/home/user/.gvm`; на результат сборки это не повлияло.
+- Синтаксис `ROADMAP/F07-limits/source/live_acceptance.py` проверен через Python `ast.parse` — успешно.
+- `python3 ROADMAP/F07-limits/source/live_acceptance.py /tmp/isobox-f07-live/isobox` — успешно под обычным пользователем (UID 1000) с доступными user systemd manager и cgroup v2:
+  - профиль только с `open_files 32` получил `RLIMIT_NOFILE=32/32`;
+  - комбинированный профиль получил `cpu.max` ровно 50%, `memory.max=268435456` и `pids.max=6` для четырёх app tasks плюс двух процессов bwrap;
+  - `pids.current=6` при четырёх активных app tasks; пятый task приложения был запрещён;
+  - приложение получило `RLIMIT_NOFILE=64/64`;
+  - cgroup transient scope исчез после штатного выхода;
+  - при отсутствии `systemd-run` запрос CPU лимита завершился до запуска payload.
+- Начальные попытки live-проверки в ограниченной оболочке не имели доступа к user systemd bus (`Operation not permitted`) и cgroup controls (`/sys/fs/cgroup` read-only). Повтор с разрешённым rootless user scope прошёл; эти первоначальные отказы не являются отказом на целевом хосте.
 
-Unit-проверки не заменяют runtime-приёмку. Проверить реальный transient scope, наблюдаемые лимиты приложения, родительские лимиты и cleanup cgroup здесь нельзя. Задача остаётся `[!]` до проверки на системе с доступной пользовательской шиной и управляемой cgroup v2.
+Инструкция для повторного запуска — `ROADMAP/F07-limits/source/README.md`.
