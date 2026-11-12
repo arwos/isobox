@@ -27,6 +27,7 @@ type BackendSelection struct {
 	PortForwarder              BackendKind
 	HostForwards               []profile.PortRule
 	DisableAutomaticForwarding bool
+	EnforceEgressFilter        bool
 	EnableIPv6                 bool
 	DNSAddress                 string
 	UseHostDNS                 bool
@@ -51,7 +52,27 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 			selection.PortForwarder = BackendNone
 			return selection, nil
 		}
-		return BackendSelection{}, fmt.Errorf("network mode off with published ports requires an enforced egress filter; pasta and slirp4netns provide forwarding but do not enforce this policy by themselves, so isobox refuses to start until the F05 egress guard is available")
+		if capabilities.Pasta == "" {
+			return BackendSelection{}, fmt.Errorf("network mode off with published ports currently requires pasta's explicit forwarding path; install passt (pasta) and retry")
+		}
+		if capabilities.PastaInspectionError != "" {
+			return BackendSelection{}, fmt.Errorf("cannot verify pasta's off-mode forwarding options: %s", capabilities.PastaInspectionError)
+		}
+		if !hasAllOptions(capabilities.PastaOptions,
+			"--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns",
+			"--no-splice", "--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra",
+			"--foreground") {
+			return BackendSelection{}, fmt.Errorf("installed pasta lacks options required to enforce off-mode egress and explicit forwarding; update passt and retry")
+		}
+		if err := validateHostForwards(config.Network.Ports, false); err != nil {
+			return BackendSelection{}, err
+		}
+		selection.Network = BackendNone
+		selection.PortForwarder = BackendPasta
+		selection.DisableAutomaticForwarding = true
+		selection.EnforceEgressFilter = true
+		selection.EnableIPv6 = true
+		return selection, nil
 	case profile.NetworkModeProxy:
 		if len(config.Network.Ports) != 0 {
 			return BackendSelection{}, fmt.Errorf("proxy mode with published ports needs the F05/F06 ingress path to be combined with the SOCKS TUN; that path is not available yet, so isobox refuses to start")

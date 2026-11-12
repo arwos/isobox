@@ -1,6 +1,6 @@
 # Архитектура и продуктовый план isobox
 
-Статус: roadmap согласован пользователем 2026-11-12. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация, host preflight с выбором совместимого сетевого backend и bwrap runtime для сети `off`, включая профильные mounts, изолированный HOME и ручные GUI grants. Direct/proxy network runtime, limits и desktop system integration ещё не реализованы.
+Статус: roadmap согласован пользователем 2026-11-12. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация, host preflight, bwrap runtime для сети `off`, профильные mounts, изолированный HOME и ручные GUI grants. F05-T01 содержит код nftables egress guard и явного pasta host forwarding для `off` с портами, но runtime acceptance ещё не выполнена, поэтому задача остаётся `[~]`. Direct/proxy network runtime, limits и desktop system integration ещё не реализованы.
 
 ## Назначение и границы
 
@@ -58,7 +58,7 @@ internal/limits/        применение лимитов
 internal/integration/   необязательные desktop/system defaults
 ```
 
-`cmd/isobox/`, `internal/cli/`, `internal/profile/`, `internal/preflight/` и `internal/sandbox/` содержат CLI, схему документов, host capability checks и bwrap root с явными профильными mounts, изолированным HOME и ручными GUI grants. Preflight предпочитает pasta и допускает slirp4netns только при подтверждённых параметрах для конкретного профиля; режимы без доказанной сетевой гарантии завершаются отказом. Network/proxy/limits/system integration остаются отдельными roadmap задачами. Не выбирать TUN/IP-stack зависимость до проверки поддержки TCP/UDP, lifecycle, лицензии и rootless-сценария.
+`cmd/isobox/`, `internal/cli/`, `internal/profile/`, `internal/preflight/` и `internal/sandbox/` содержат CLI, схему документов, host capability checks и bwrap root. Для `off` с объявленными портами `internal/sandbox/` удерживает приложение до старта pasta, устанавливает nftables default-drop guard и затем снимает setup capability до exec приложения. Runtime acceptance этой ветки остаётся открытой. Direct/proxy, SOCKS5/TUN, limits и system integration остаются отдельными roadmap задачами. Не выбирать TUN/IP-stack зависимость до проверки поддержки TCP/UDP, lifecycle, лицензии и rootless-сценария.
 
 ## Зависимости и проверенные источники
 

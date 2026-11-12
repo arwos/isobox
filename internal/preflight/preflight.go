@@ -4,6 +4,7 @@ package preflight
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -18,6 +19,7 @@ import (
 // after checking that the installed helper can preserve profile semantics.
 type Capabilities struct {
 	Bubblewrap           string
+	NFT                  string
 	Pasta                string
 	PastaOptions         map[string]bool
 	PastaInspectionError string
@@ -38,6 +40,9 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 	if runtime.GOOS != "linux" {
 		return capabilities, fmt.Errorf("host preflight failed:\n- isobox requires Linux; current operating system is %s", runtime.GOOS)
 	}
+	if os.Geteuid() == 0 {
+		issues = append(issues, "isobox must run as an ordinary unprivileged user; do not launch it as root")
+	}
 
 	var err error
 	capabilities.Bubblewrap, err = exec.LookPath("bwrap")
@@ -53,7 +58,8 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 
 	capabilities.Pasta, _ = exec.LookPath("pasta")
 	capabilities.Slirp4netns, _ = exec.LookPath("slirp4netns")
-	if capabilities.Pasta == "" && capabilities.Slirp4netns == "" {
+	needsNetworkBackend := config.NetworkMode != profile.NetworkModeOff || len(config.Network.Ports) != 0
+	if needsNetworkBackend && capabilities.Pasta == "" && capabilities.Slirp4netns == "" {
 		issues = append(issues, "neither pasta nor slirp4netns was found in PATH; install passt (pasta) or slirp4netns and retry")
 	}
 	if capabilities.Pasta != "" {
@@ -65,6 +71,26 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 	capabilities.Network, err = SelectBackend(config, capabilities)
 	if err != nil {
 		issues = append(issues, fmt.Sprintf("network backend cannot preserve the profile: %v", err))
+	}
+	if config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) != 0 {
+		capabilities.NFT, err = exec.LookPath("nft")
+		if err != nil {
+			issues = append(issues, "network mode off with published ports requires nftables (nft) to enforce the egress filter; install nftables and retry")
+		} else if nftPath, resolveErr := filepath.EvalSymlinks(capabilities.NFT); resolveErr != nil {
+			issues = append(issues, fmt.Sprintf("cannot resolve nft executable %q: %v", capabilities.NFT, resolveErr))
+		} else if !isSandboxSystemPath(nftPath) {
+			issues = append(issues, fmt.Sprintf("nft executable %q is outside the read-only system paths mounted into the sandbox; install nftables under /usr, /bin, or /sbin", nftPath))
+		} else {
+			capabilities.NFT = nftPath
+		}
+		if capabilities.Bubblewrap != "" {
+			options, inspectErr := inspectOptions(capabilities.Bubblewrap)
+			if inspectErr != "" {
+				issues = append(issues, fmt.Sprintf("cannot verify bwrap network-guard options: %s", inspectErr))
+			} else if !hasAllOptions(options, "--cap-add", "--block-fd", "--disable-userns", "--assert-userns-disabled") {
+				issues = append(issues, "installed bwrap lacks the options required for the off-mode egress guard; update bubblewrap and retry")
+			}
+		}
 	}
 
 	if config.NetworkMode == profile.NetworkModeProxy {
@@ -110,11 +136,11 @@ func inspectOptions(path string) (map[string]bool, string) {
 }
 
 func checkBubblewrap(path string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	output, err := exec.CommandContext(ctx, path, "--version").CombinedOutput()
+	versionCtx, cancelVersion := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelVersion()
+	output, err := exec.CommandContext(versionCtx, path, "--version").CombinedOutput()
 	if err != nil {
-		if ctx.Err() != nil {
+		if versionCtx.Err() != nil {
 			return fmt.Errorf("--version timed out after %s", 3*time.Second)
 		}
 		return fmt.Errorf("--version returned an error: %w (%s)", err, strings.TrimSpace(string(output)))
@@ -122,20 +148,34 @@ func checkBubblewrap(path string) error {
 	if strings.TrimSpace(string(output)) == "" {
 		return fmt.Errorf("--version returned no version information")
 	}
-	output, err = exec.CommandContext(ctx, path,
+	probeCtx, cancelProbe := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelProbe()
+	output, err = exec.CommandContext(probeCtx, path,
 		"--unshare-user",
 		"--unshare-net",
+		"--disable-userns",
+		"--assert-userns-disabled",
 		"--ro-bind", string(filepath.Separator), string(filepath.Separator),
 		"--clearenv",
 		"--", "/bin/true",
 	).CombinedOutput()
 	if err != nil {
-		if ctx.Err() != nil {
-			return fmt.Errorf("minimal rootless sandbox probe timed out after %s", 3*time.Second)
+		if probeCtx.Err() != nil {
+			return fmt.Errorf("minimal rootless sandbox probe timed out after %s", 5*time.Second)
 		}
 		return fmt.Errorf("minimal rootless sandbox probe failed: %w (%s)", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func isSandboxSystemPath(path string) bool {
+	for _, root := range []string{"/usr", "/bin", "/sbin"} {
+		relative, err := filepath.Rel(root, path)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func checkRequestedLimits(limits profile.ResourceLimits) error {

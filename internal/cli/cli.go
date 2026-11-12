@@ -88,7 +88,7 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
 	}
-	command, err := sandbox.BuildCommand(capabilities.Bubblewrap, effectiveProfile, options.ProfilePath, options.AppID, options.Command)
+	command, err := sandbox.BuildCommand(capabilities.Bubblewrap, capabilities.NFT, effectiveProfile, options.ProfilePath, options.AppID, options.Command)
 	if err != nil {
 		fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
@@ -97,7 +97,12 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 	command.Stdout = stdout
 	command.Stderr = stderr
 
-	exitCode, err := sandbox.Run(command)
+	var exitCode int
+	if capabilities.Network.PortForwarder == preflight.BackendPasta && len(effectiveProfile.Network.Ports) != 0 {
+		exitCode, err = sandbox.RunWithPasta(command, capabilities.Pasta, effectiveProfile.Network.Ports)
+	} else {
+		exitCode, err = sandbox.Run(command)
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "isobox run: sandbox launch failed: %v\n", err)
 		return 125

@@ -5,9 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/arwos/isobox/internal/profile"
 )
@@ -22,11 +26,12 @@ type systemMount struct {
 }
 
 const sandboxHome = "/home/isobox"
+const internalOffGuardCommand = "__isobox_internal_off_guard"
 
 // BuildCommand creates a bwrap command for the supported portion of the
 // current sandbox profile. Host paths are limited to fixed runtime paths and
 // the mounts explicitly granted by the profile.
-func BuildCommand(bubblewrap string, config profile.EffectiveProfile, profilePath, appID string, application []string) (*exec.Cmd, error) {
+func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, profilePath, appID string, application []string) (*exec.Cmd, error) {
 	if bubblewrap == "" {
 		return nil, fmt.Errorf("bwrap executable path is required")
 	}
@@ -66,15 +71,18 @@ func BuildCommand(bubblewrap string, config profile.EffectiveProfile, profilePat
 	}
 	sortProfileMounts(profileMounts)
 
-	args := []string{
-		"--unshare-user",
+	args := []string{"--unshare-user"}
+	if len(config.Network.Ports) == 0 {
+		args = append(args, "--disable-userns", "--assert-userns-disabled")
+	}
+	args = append(args,
 		"--unshare-pid",
 		"--unshare-ipc",
 		"--unshare-uts",
 		"--unshare-net",
 		"--new-session",
 		"--die-with-parent",
-	}
+	)
 	for _, mount := range systemMounts {
 		args = append(args, "--ro-bind", mount.source, mount.destination)
 	}
@@ -114,6 +122,24 @@ func BuildCommand(bubblewrap string, config profile.EffectiveProfile, profilePat
 	for _, name := range environment {
 		args = append(args, "--setenv", name, gui.environment[name])
 	}
+	if len(config.Network.Ports) != 0 {
+		if !filepath.IsAbs(nftPath) {
+			return nil, fmt.Errorf("an absolute nftables executable path is required for published ports")
+		}
+		binary, err := os.Executable()
+		if err != nil {
+			return nil, fmt.Errorf("locate isobox executable for the off-mode firewall helper: %w", err)
+		}
+		binary, err = filepath.EvalSymlinks(binary)
+		if err != nil {
+			return nil, fmt.Errorf("resolve isobox executable for the off-mode firewall helper: %w", err)
+		}
+		args = append(args,
+			"--ro-bind", binary, "/tmp/.isobox-internal",
+			"--cap-add", "CAP_NET_ADMIN",
+			"--block-fd", "3",
+		)
+	}
 	args = append(args,
 		"--unsetenv", "PWD",
 		"--chdir", "/",
@@ -121,19 +147,54 @@ func BuildCommand(bubblewrap string, config profile.EffectiveProfile, profilePat
 		"--json-status-fd", "3",
 		"--",
 	)
+	if len(config.Network.Ports) != 0 {
+		tcpPorts, udpPorts, err := portForwardSpecs(config.Network.Ports)
+		if err != nil {
+			return nil, err
+		}
+		if tcpPorts == "" {
+			tcpPorts = "-"
+		}
+		if udpPorts == "" {
+			udpPorts = "-"
+		}
+		args = append(args, "/tmp/.isobox-internal", internalOffGuardCommand, nftPath, tcpPorts, udpPorts, "--")
+	}
 	args = append(args, application...)
 
 	return exec.Command(bubblewrap, args...), nil
 }
 
 func validateSupportedProfile(config profile.EffectiveProfile) error {
+	if len(config.Network.Ports) != 0 && config.NetworkMode != profile.NetworkModeOff {
+		return fmt.Errorf("profile.network.port is currently supported only with network mode off; refusing to ignore published ports")
+	}
 	if config.NetworkMode != profile.NetworkModeOff {
 		return fmt.Errorf("profile.network.mode=%q is not supported by the sandbox runtime yet; refusing to launch with different network semantics until F05/F06 is implemented", config.NetworkMode)
 	}
-	if len(config.Network.Ports) != 0 {
-		return fmt.Errorf("profile.network.port is not supported by this runtime yet; refusing to ignore published ports")
-	}
 	return nil
+}
+
+func portForwardSpecs(rules []profile.PortRule) (string, string, error) {
+	var tcp, udp []string
+	for index, rule := range rules {
+		ip := net.ParseIP(rule.HostAddress)
+		if ip == nil {
+			return "", "", fmt.Errorf("profile.network.port[%d].host_address is not an IP address", index)
+		}
+		portRange := strconv.Itoa(int(rule.Port))
+		if rule.EndPort != 0 {
+			portRange += "-" + strconv.Itoa(int(rule.EndPort))
+		}
+		forward := ip.String() + "/" + portRange
+		if rule.Protocol == profile.PortProtocolBoth || rule.Protocol == profile.PortProtocolTCP {
+			tcp = append(tcp, forward)
+		}
+		if rule.Protocol == profile.PortProtocolBoth || rule.Protocol == profile.PortProtocolUDP {
+			udp = append(udp, forward)
+		}
+	}
+	return strings.Join(tcp, ","), strings.Join(udp, ","), nil
 }
 
 func availableSystemMounts() ([]systemMount, error) {
