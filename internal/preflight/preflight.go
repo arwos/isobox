@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -13,13 +14,20 @@ import (
 	"github.com/arwos/isobox/internal/profile"
 )
 
-// Capabilities contains paths discovered during preflight. Backend selection
-// and semantic compatibility checks are handled by the following network task.
+// Capabilities contains discovered host tools and the network plan selected
+// after checking that the installed helper can preserve profile semantics.
 type Capabilities struct {
-	Bubblewrap  string
-	Pasta       string
-	Slirp4netns string
+	Bubblewrap           string
+	Pasta                string
+	PastaOptions         map[string]bool
+	PastaInspectionError string
+	Slirp4netns          string
+	Slirp4netnsOptions   map[string]bool
+	SlirpInspectionError string
+	Network              BackendSelection
 }
+
+var longOptionPattern = regexp.MustCompile(`--[a-zA-Z0-9][a-zA-Z0-9-]*`)
 
 // Check verifies host prerequisites before any sandbox or application process
 // is started. It accumulates independent failures so one run can report the
@@ -48,6 +56,16 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 	if capabilities.Pasta == "" && capabilities.Slirp4netns == "" {
 		issues = append(issues, "neither pasta nor slirp4netns was found in PATH; install passt (pasta) or slirp4netns and retry")
 	}
+	if capabilities.Pasta != "" {
+		capabilities.PastaOptions, capabilities.PastaInspectionError = inspectOptions(capabilities.Pasta)
+	}
+	if capabilities.Slirp4netns != "" {
+		capabilities.Slirp4netnsOptions, capabilities.SlirpInspectionError = inspectOptions(capabilities.Slirp4netns)
+	}
+	capabilities.Network, err = SelectBackend(config, capabilities)
+	if err != nil {
+		issues = append(issues, fmt.Sprintf("network backend cannot preserve the profile: %v", err))
+	}
 
 	if config.NetworkMode == profile.NetworkModeProxy {
 		if err := probeTUN(); err != nil {
@@ -69,6 +87,26 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 		return capabilities, fmt.Errorf("%s", message.String())
 	}
 	return capabilities, nil
+}
+
+func inspectOptions(path string) (map[string]bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, path, "--help").CombinedOutput()
+	if ctx.Err() != nil {
+		return nil, fmt.Sprintf("--help timed out after %s", 3*time.Second)
+	}
+	if err != nil {
+		return nil, fmt.Sprintf("--help returned an error: %v (%s)", err, strings.TrimSpace(string(output)))
+	}
+	options := make(map[string]bool)
+	for _, option := range longOptionPattern.FindAllString(string(output), -1) {
+		options[option] = true
+	}
+	if len(options) == 0 {
+		return nil, "--help returned no long options"
+	}
+	return options, ""
 }
 
 func checkBubblewrap(path string) error {

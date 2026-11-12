@@ -4,7 +4,9 @@
 
 - Проверить отсутствие каждого обязательного бинарника и отключённые user namespaces; получить точную диагностику без запуска payload.
 - Проверить автоматический выбор pasta и fallback на slirp, когда только один backend доступен.
-- Отклонить fallback, если он не поддерживает обязательный адрес привязки, протокол/диапазон или гарантию egress policy.
+- Проверить, что pasta автоматически не публикует незаявленные порты; проверить TCP/UDP и явные host addresses для отдельных портов и диапазонов.
+- Отклонить fallback slirp для IPv6 host bind address, отсутствующего API или DNS override, если helper не может сохранить эти параметры.
+- Отклонить `off` с ports при отсутствии egress guard, а `proxy` с ports — пока нет совместимого ingress path.
 - Проверить TUN недоступен/запрещён и получить отказ до запуска proxy-mode приложения.
 - Проверить, что рекомендации не выполняются автоматически с root-правами.
 
@@ -12,14 +14,16 @@
 
 Проверено:
 
-- `gofmt -w internal/preflight/preflight.go internal/preflight/probe_linux.go internal/preflight/probe_other.go internal/cli/cli.go cmd/isobox/main.go` — успешно.
+- `pasta --help` и `slirp4netns --help` — локальные interfaces прочитаны; установленный pasta обрывает список до всех нужных параметров, поэтому его совместимость в этом окружении не подтверждена. Функция runtime выбора по этим выводам отдельно не запускалась.
+- `gofmt -w internal/preflight/backend.go internal/preflight/preflight.go` — успешно.
 - `git diff --check` — без замечаний.
-- `go build ./...` — exit 0; GVM вывел предупреждение о записи stat cache в read-only `/home/user/.gvm/.cache`.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — exit 0; GVM вывел предупреждение о записи stat cache в read-only `/home/user/.gvm/.cache`.
 - В текущей среде `bwrap`, `pasta` и `slirp4netns` найдены через `PATH`; `/dev/net/tun` отсутствует.
 
 Не запускалось:
 
 - `isobox run` не запускался, поэтому фактические namespace/TUN-пробы не подтверждены. Ожидаемое отсутствие `/dev/net/tun` означает, что proxy mode здесь должен закрываться отказом.
-- Автоматические тесты не добавлялись и не запускались.
+- Автоматические тесты не запускались.
+- Не проверялись фактическая доступность host bind addresses/ports, настройка DNS внутри namespace и готовность helper в runtime; приложение пока не стартует, пока не реализованы sandbox/network runtime.
 
 Сборка подтверждает только компиляцию; она не доказывает возможность создавать namespaces/TUN на целевой системе.
