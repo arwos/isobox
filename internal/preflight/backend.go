@@ -88,10 +88,8 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 	}
 
 	pastaSupported := capabilities.Pasta != "" && capabilities.PastaInspectionError == "" && hasAllOptions(capabilities.PastaOptions,
-		"--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns")
-	if config.DNSServer != "" {
-		pastaSupported = pastaSupported && hasAllOptions(capabilities.PastaOptions, "--dns", "--dhcp-dns")
-	}
+		"--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns",
+		"--foreground", "--pid", "--dns-forward", "--dns-host")
 	if pastaSupported {
 		if err := validateHostForwards(config.Network.Ports, false); err != nil {
 			return BackendSelection{}, err
@@ -131,10 +129,10 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 		reasons = append(reasons, "pasta was not found")
 	} else if capabilities.PastaInspectionError != "" {
 		reasons = append(reasons, "pasta capabilities could not be inspected: "+capabilities.PastaInspectionError)
-	} else if !hasAllOptions(capabilities.PastaOptions, "--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns") {
-		reasons = append(reasons, "pasta lacks required explicit network/forwarding options")
-	} else if config.DNSServer != "" && !hasAllOptions(capabilities.PastaOptions, "--dns", "--dhcp-dns") {
-		reasons = append(reasons, "pasta cannot apply the configured DNS server")
+	} else if !hasAllOptions(capabilities.PastaOptions,
+		"--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns",
+		"--foreground", "--pid", "--dns-forward", "--dns-host") {
+		reasons = append(reasons, "pasta lacks required network, lifecycle, or DNS-forwarding options")
 	}
 	if capabilities.Slirp4netns == "" {
 		reasons = append(reasons, "slirp4netns was not found")

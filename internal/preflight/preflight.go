@@ -98,6 +98,14 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 			issues = append(issues, fmt.Sprintf("proxy mode cannot create a TUN interface in a user network namespace: %v; make the kernel TUN driver and /dev/net/tun available, allow the current user to open the device, and permit CAP_NET_ADMIN in the new network namespace", err))
 		}
 	}
+	if config.NetworkMode == profile.NetworkModeDirect && capabilities.Bubblewrap != "" {
+		options, inspectErr := inspectOptions(capabilities.Bubblewrap)
+		if inspectErr != "" {
+			issues = append(issues, fmt.Sprintf("cannot verify bwrap direct-network startup options: %s", inspectErr))
+		} else if !hasAllOptions(options, "--block-fd", "--ro-bind-data", "--json-status-fd", "--disable-userns", "--assert-userns-disabled") {
+			issues = append(issues, "installed bwrap lacks the startup-gate or resolver-file options required for direct network mode; update bubblewrap and retry")
+		}
+	}
 
 	if err := checkRequestedLimits(config.Limits); err != nil {
 		issues = append(issues, err.Error())

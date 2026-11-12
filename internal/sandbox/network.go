@@ -1,0 +1,147 @@
+package sandbox
+
+import (
+	"fmt"
+	"net"
+	"os"
+	"strings"
+
+	"github.com/arwos/isobox/internal/preflight"
+	"github.com/arwos/isobox/internal/profile"
+)
+
+// NetworkRuntime is the selected backend and the launch data shared by the
+// bubblewrap builder and network-process supervisor.
+type NetworkRuntime struct {
+	Mode          profile.NetworkMode
+	Backend       preflight.BackendKind
+	PortForwarder preflight.BackendKind
+	Executable    string
+	Resolver      []byte
+	PastaDNSArgs  []string
+}
+
+func (runtime NetworkRuntime) activeBackend() preflight.BackendKind {
+	if runtime.Backend != preflight.BackendNone {
+		return runtime.Backend
+	}
+	return runtime.PortForwarder
+}
+
+// PrepareNetwork turns the preflight selection into the exact executable and
+// resolver configuration used by bwrap and the network backend.
+func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath string) (NetworkRuntime, error) {
+	runtime := NetworkRuntime{
+		Mode:          selection.Mode,
+		Backend:       selection.Network,
+		PortForwarder: selection.PortForwarder,
+	}
+	backend := runtime.activeBackend()
+	switch backend {
+	case preflight.BackendNone:
+		return runtime, nil
+	case preflight.BackendPasta:
+		runtime.Executable = pastaPath
+	case preflight.BackendSlirp4netns:
+		runtime.Executable = slirpPath
+	case preflight.BackendProxyTUN:
+		return runtime, nil
+	default:
+		return NetworkRuntime{}, fmt.Errorf("unsupported selected network backend %q", backend)
+	}
+	if runtime.Executable == "" {
+		return NetworkRuntime{}, fmt.Errorf("selected network backend %q has no executable", backend)
+	}
+	if runtime.Mode != profile.NetworkModeDirect {
+		return runtime, nil
+	}
+
+	resolver, pastaArgs, err := directResolver(selection, backend)
+	if err != nil {
+		return NetworkRuntime{}, err
+	}
+	runtime.Resolver = []byte(resolver)
+	runtime.PastaDNSArgs = pastaArgs
+	return runtime, nil
+}
+
+func directResolver(selection preflight.BackendSelection, backend preflight.BackendKind) (string, []string, error) {
+	if backend == preflight.BackendSlirp4netns {
+		address := selection.DNSAddress
+		if selection.UseHostDNS || address == "" {
+			address = "10.0.2.3"
+		}
+		return "nameserver " + address + "\n", nil, nil
+	}
+	if backend != preflight.BackendPasta {
+		return "", nil, fmt.Errorf("no direct resolver implementation exists for backend %q", backend)
+	}
+
+	var nameservers []net.IP
+	if selection.UseHostDNS || selection.DNSAddress == "" {
+		contents, err := os.ReadFile("/etc/resolv.conf")
+		if err != nil {
+			return "", nil, fmt.Errorf("read host DNS configuration: %w", err)
+		}
+		for _, line := range strings.Split(string(contents), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 || fields[0] != "nameserver" {
+				continue
+			}
+			address := net.ParseIP(fields[1])
+			if address == nil {
+				continue
+			}
+			nameservers = appendUniqueIP(nameservers, address)
+		}
+	} else {
+		address := net.ParseIP(selection.DNSAddress)
+		if address == nil {
+			return "", nil, fmt.Errorf("configured DNS address %q is not an IP address", selection.DNSAddress)
+		}
+		nameservers = append(nameservers, address)
+	}
+	if len(nameservers) == 0 {
+		return "", nil, fmt.Errorf("host DNS configuration contains no usable nameserver")
+	}
+
+	var lines []string
+	var pastaArgs []string
+	forwardedLoopback := map[string]bool{}
+	for _, address := range nameservers {
+		resolverAddress := address.String()
+		if address.IsLoopback() {
+			family := "v6"
+			if address.To4() != nil {
+				family = "v4"
+			}
+			if !forwardedLoopback[family] {
+				forwardAddress := "fd00::1"
+				if family == "v4" {
+					forwardAddress = "169.254.1.1"
+				}
+				pastaArgs = append(pastaArgs,
+					"--dns-forward", forwardAddress,
+					"--dns-host", resolverAddress,
+				)
+				forwardedLoopback[family] = true
+			}
+			if family == "v4" {
+				resolverAddress = "169.254.1.1"
+			} else {
+				resolverAddress = "fd00::1"
+			}
+		}
+		lines = append(lines, "nameserver "+resolverAddress)
+	}
+	return strings.Join(lines, "\n") + "\n", pastaArgs, nil
+}
+
+func appendUniqueIP(addresses []net.IP, candidate net.IP) []net.IP {
+	for _, address := range addresses {
+		if address.Equal(candidate) {
+			return addresses
+		}
+	}
+	return append(addresses, candidate)
+}

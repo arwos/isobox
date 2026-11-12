@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -25,28 +26,36 @@ type bwrapStatus struct {
 // shell-compatible exit status. The JSON status FD gives isobox the host PID
 // of the sandboxed command so interactive signals can cross --new-session.
 func Run(command *exec.Cmd) (int, error) {
-	return run(command, nil)
+	return run(command, nil, nil)
 }
 
-// RunWithPasta starts pasta with only the profile's declared host forwards.
-// The bwrap child remains blocked until pasta owns every announced host
-// socket; its first command then installs the egress filter before execing the
-// application.
+// RunWithPasta keeps the legacy off-mode entry point while delegating to the
+// selected-backend supervisor.
 func RunWithPasta(command *exec.Cmd, pastaPath string, rules []profile.PortRule) (int, error) {
-	return run(command, &pastaLaunch{path: pastaPath, rules: append([]profile.PortRule(nil), rules...)})
+	network := NetworkRuntime{
+		Mode:          profile.NetworkModeOff,
+		PortForwarder: "pasta",
+		Executable:    pastaPath,
+	}
+	return run(command, &network, append([]profile.PortRule(nil), rules...))
 }
 
-type pastaLaunch struct {
-	path  string
-	rules []profile.PortRule
+// RunWithNetwork holds the application behind bwrap's startup gate until the
+// selected direct-network backend is configured and all declared forwards
+// have been accepted.
+func RunWithNetwork(command *exec.Cmd, network NetworkRuntime, rules []profile.PortRule) (int, error) {
+	return run(command, &network, append([]profile.PortRule(nil), rules...))
 }
 
-func run(command *exec.Cmd, forwarding *pastaLaunch) (int, error) {
+func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule) (int, error) {
 	if command == nil {
 		return 0, fmt.Errorf("bwrap command is required")
 	}
+	if network != nil && network.activeBackend() == "none" {
+		return 0, fmt.Errorf("network supervisor requires a selected backend")
+	}
 	var gateReader, gateWriter *os.File
-	if forwarding != nil {
+	if network != nil {
 		var err error
 		gateReader, gateWriter, err = os.Pipe()
 		if err != nil {
@@ -56,22 +65,23 @@ func run(command *exec.Cmd, forwarding *pastaLaunch) (int, error) {
 		if err := setOptionFD(command.Args, "--block-fd", gateFD); err != nil {
 			_ = gateReader.Close()
 			_ = gateWriter.Close()
+			closeExtraFiles(command.ExtraFiles)
 			return 0, err
 		}
 		command.ExtraFiles = append(command.ExtraFiles, gateReader)
 	}
 	statusFD := 3 + len(command.ExtraFiles)
 	if err := setStatusFD(command.Args, statusFD); err != nil {
-		if gateReader != nil {
-			_ = gateReader.Close()
+		closeExtraFiles(command.ExtraFiles)
+		if gateWriter != nil {
 			_ = gateWriter.Close()
 		}
 		return 0, err
 	}
 	statusReader, statusWriter, err := os.Pipe()
 	if err != nil {
-		if gateReader != nil {
-			_ = gateReader.Close()
+		closeExtraFiles(command.ExtraFiles)
+		if gateWriter != nil {
 			_ = gateWriter.Close()
 		}
 		return 0, fmt.Errorf("create bwrap status pipe: %w", err)
@@ -79,17 +89,14 @@ func run(command *exec.Cmd, forwarding *pastaLaunch) (int, error) {
 	defer statusReader.Close()
 	command.ExtraFiles = append(command.ExtraFiles, statusWriter)
 	if err := command.Start(); err != nil {
-		_ = statusWriter.Close()
-		if gateReader != nil {
-			_ = gateReader.Close()
+		closeExtraFiles(command.ExtraFiles)
+		if gateWriter != nil {
 			_ = gateWriter.Close()
 		}
 		return 0, fmt.Errorf("start bwrap: %w", err)
 	}
-	_ = statusWriter.Close()
-	if gateReader != nil {
-		_ = gateReader.Close()
-	}
+	closeExtraFiles(command.ExtraFiles)
+	command.ExtraFiles = nil
 
 	statuses := make(chan bwrapStatus, 2)
 	go readStatuses(statusReader, statuses)
@@ -105,7 +112,7 @@ func run(command *exec.Cmd, forwarding *pastaLaunch) (int, error) {
 	var childPID int
 	var pendingSignals []os.Signal
 	statusChannel := (<-chan bwrapStatus)(statuses)
-	var forwarder *pastaProcess
+	var forwarder managedNetworkProcess
 	var forwarderDone <-chan struct{}
 	gateReleased := false
 	sandboxExitReported := false
@@ -119,11 +126,14 @@ func run(command *exec.Cmd, forwarding *pastaLaunch) (int, error) {
 			}
 			if status.ChildPID > 0 {
 				childPID = status.ChildPID
-				if forwarding != nil && forwarder == nil {
-					forwarder, err = startPasta(forwarding.path, childPID, forwarding.rules, command.Stdout, command.Stderr)
+				if network != nil && forwarder == nil {
+					forwarder, err = startNetworkBackend(*network, childPID, rules, command.Stdout, command.Stderr)
 					if err == nil {
-						forwarderDone = forwarder.done
+						forwarderDone = forwarder.doneChannel()
 						err = forwarder.waitReady()
+						if err == nil {
+							err = forwarder.configureForwards(rules)
+						}
 					}
 					if err != nil {
 						if forwarder != nil {
@@ -132,7 +142,7 @@ func run(command *exec.Cmd, forwarding *pastaLaunch) (int, error) {
 						_ = command.Process.Kill()
 						_ = gateWriter.Close()
 						<-waitResult
-						return 125, fmt.Errorf("prepare host port forwarding: %w", err)
+						return 125, fmt.Errorf("prepare %s network: %w", network.activeBackend(), err)
 					}
 					if _, err := gateWriter.Write([]byte{1}); err != nil {
 						forwarder.stop()
@@ -163,7 +173,7 @@ func run(command *exec.Cmd, forwarding *pastaLaunch) (int, error) {
 		case <-forwarderDone:
 			forwarderDone = nil
 			if gateReleased && !sandboxExitReported {
-				forwardingFailure = fmt.Errorf("pasta stopped while the application was running: %v", forwarder.waitErr)
+				forwardingFailure = fmt.Errorf("%s stopped while the application was running: %v", network.activeBackend(), forwarder.error())
 				_ = command.Process.Kill()
 			}
 		case waitErr := <-waitResult:
@@ -177,6 +187,25 @@ func run(command *exec.Cmd, forwarding *pastaLaunch) (int, error) {
 				return 125, forwardingFailure
 			}
 			return processExitCode(waitErr)
+		}
+	}
+}
+
+func startNetworkBackend(network NetworkRuntime, namespacePID int, rules []profile.PortRule, stdout, stderr io.Writer) (managedNetworkProcess, error) {
+	switch network.activeBackend() {
+	case "pasta":
+		return startPasta(network.Executable, namespacePID, rules, network.Mode, network.PastaDNSArgs, stdout, stderr)
+	case "slirp4netns":
+		return startSlirp(network.Executable, namespacePID, rules, stdout, stderr)
+	default:
+		return nil, fmt.Errorf("unsupported network backend %q", network.activeBackend())
+	}
+}
+
+func closeExtraFiles(files []*os.File) {
+	for _, file := range files {
+		if file != nil {
+			_ = file.Close()
 		}
 	}
 }

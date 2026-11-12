@@ -19,16 +19,26 @@ import (
 
 const forwarderReadyTimeout = 8 * time.Second
 
+type managedNetworkProcess interface {
+	waitReady() error
+	configureForwards([]profile.PortRule) error
+	stop()
+	doneChannel() <-chan struct{}
+	error() error
+}
+
 type pastaProcess struct {
 	command  *exec.Cmd
 	done     chan struct{}
 	waitErr  error
 	expected map[string]struct{}
+	pidFile  string
+	tempDir  string
 }
 
-func startPasta(pastaPath string, namespacePID int, rules []profile.PortRule, stdout, stderr io.Writer) (*pastaProcess, error) {
+func startPasta(pastaPath string, namespacePID int, rules []profile.PortRule, mode profile.NetworkMode, dnsArgs []string, stdout, stderr io.Writer) (*pastaProcess, error) {
 	if pastaPath == "" {
-		return nil, fmt.Errorf("pasta executable is required for published ports")
+		return nil, fmt.Errorf("pasta executable is required for direct network mode")
 	}
 	if namespacePID <= 0 {
 		return nil, fmt.Errorf("bwrap did not report a valid namespace process ID")
@@ -41,7 +51,8 @@ func startPasta(pastaPath string, namespacePID int, rules []profile.PortRule, st
 	if err != nil {
 		return nil, err
 	}
-	if !hasTCP && !hasUDP {
+	offMode := mode == profile.NetworkModeOff
+	if offMode && !hasTCP && !hasUDP {
 		return nil, fmt.Errorf("at least one TCP or UDP host port must be announced")
 	}
 	if tcpSpec == "" {
@@ -53,16 +64,28 @@ func startPasta(pastaPath string, namespacePID int, rules []profile.PortRule, st
 
 	args := []string{
 		"--foreground", "--quiet",
-		"--config-net", "--no-splice", "--no-icmp",
-		"--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra",
+		"--config-net",
 		"--tcp-ns=none", "--udp-ns=none",
 		"--tcp-ports=" + tcpSpec, "--udp-ports=" + udpSpec,
 	}
-	if !hasTCP {
-		args = append(args, "--no-tcp")
-	}
-	if !hasUDP {
-		args = append(args, "--no-udp")
+	process := &pastaProcess{expected: expected}
+	if offMode {
+		args = append(args, "--no-splice", "--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra")
+		if !hasTCP {
+			args = append(args, "--no-tcp")
+		}
+		if !hasUDP {
+			args = append(args, "--no-udp")
+		}
+	} else {
+		tempDir, err := os.MkdirTemp("", "isobox-pasta-")
+		if err != nil {
+			return nil, fmt.Errorf("create pasta readiness directory: %w", err)
+		}
+		process.tempDir = tempDir
+		process.pidFile = filepath.Join(tempDir, "ready.pid")
+		args = append(args, dnsArgs...)
+		args = append(args, "--pid", process.pidFile)
 	}
 	args = append(args, strconv.Itoa(namespacePID))
 	command := exec.Command(pastaPath, args...)
@@ -73,9 +96,13 @@ func startPasta(pastaPath string, namespacePID int, rules []profile.PortRule, st
 		command.Stderr = stderr
 	}
 	if err := command.Start(); err != nil {
+		if process.tempDir != "" {
+			_ = os.RemoveAll(process.tempDir)
+		}
 		return nil, fmt.Errorf("start pasta for host port forwarding: %w", err)
 	}
-	process := &pastaProcess{command: command, done: make(chan struct{}), expected: expected}
+	process.command = command
+	process.done = make(chan struct{})
 	go func() {
 		process.waitErr = command.Wait()
 		close(process.done)
@@ -84,23 +111,27 @@ func startPasta(pastaPath string, namespacePID int, rules []profile.PortRule, st
 }
 
 func (process *pastaProcess) stop() {
-	if process == nil || process.command == nil || process.command.Process == nil {
+	if process == nil {
 		return
 	}
-	select {
-	case <-process.done:
-		return
-	default:
+	if process.command != nil && process.command.Process != nil {
+		select {
+		case <-process.done:
+		default:
+			_ = process.command.Process.Signal(os.Interrupt)
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-process.done:
+			case <-timer.C:
+				_ = process.command.Process.Kill()
+				<-process.done
+			}
+			timer.Stop()
+		}
 	}
-	_ = process.command.Process.Signal(os.Interrupt)
-	timer := time.NewTimer(time.Second)
-	defer timer.Stop()
-	select {
-	case <-process.done:
-		return
-	case <-timer.C:
-		_ = process.command.Process.Kill()
-		<-process.done
+	if process.tempDir != "" {
+		_ = os.RemoveAll(process.tempDir)
+		process.tempDir = ""
 	}
 }
 
@@ -112,6 +143,12 @@ func (process *pastaProcess) waitReady() error {
 	var lastErr error
 	for {
 		ready, err := process.ownsForwardedSockets()
+		if ready && process.pidFile != "" {
+			ready = process.pidFileReady()
+		}
+		if len(process.expected) == 0 && process.pidFile == "" {
+			ready = false
+		}
 		if err == nil && ready {
 			select {
 			case <-process.done:
@@ -128,16 +165,31 @@ func (process *pastaProcess) waitReady() error {
 			if process.waitErr != nil {
 				return fmt.Errorf("pasta exited during startup: %w", process.waitErr)
 			}
-			return fmt.Errorf("pasta exited before all published host ports were ready")
+			return fmt.Errorf("pasta exited before its network was ready")
 		case <-ticker.C:
 		case <-deadline.C:
 			missing := process.missingForwardedSockets()
 			if lastErr != nil {
-				return fmt.Errorf("pasta did not bind every published host port within %s (missing: %s; inspect /proc/%d/net and /proc/%d/fd: %v)", forwarderReadyTimeout, missing, process.command.Process.Pid, process.command.Process.Pid, lastErr)
+				return fmt.Errorf("pasta did not become ready within %s (missing: %s; inspect /proc/%d/net and /proc/%d/fd: %v)", forwarderReadyTimeout, missing, process.command.Process.Pid, process.command.Process.Pid, lastErr)
 			}
-			return fmt.Errorf("pasta did not bind every published host port within %s (missing: %s)", forwarderReadyTimeout, missing)
+			return fmt.Errorf("pasta did not become ready within %s (missing: %s)", forwarderReadyTimeout, missing)
 		}
 	}
+}
+
+func (process *pastaProcess) configureForwards([]profile.PortRule) error { return nil }
+
+func (process *pastaProcess) doneChannel() <-chan struct{} { return process.done }
+
+func (process *pastaProcess) error() error { return process.waitErr }
+
+func (process *pastaProcess) pidFileReady() bool {
+	data, err := os.ReadFile(process.pidFile)
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	return err == nil && process.command != nil && process.command.Process != nil && pid == process.command.Process.Pid
 }
 
 func (process *pastaProcess) ownsForwardedSockets() (bool, error) {
@@ -282,13 +334,20 @@ func expectedForwardedSockets(rules []profile.PortRule) (map[string]struct{}, bo
 			end = rule.EndPort
 		}
 		for port := uint32(start); port <= uint32(end); port++ {
-			if rule.Protocol == profile.PortProtocolBoth || rule.Protocol == profile.PortProtocolTCP {
+			switch rule.Protocol {
+			case profile.PortProtocolBoth:
 				hasTCP = true
 				expected["tcp|"+ip.String()+"|"+strconv.FormatUint(uint64(port), 10)] = struct{}{}
-			}
-			if rule.Protocol == profile.PortProtocolBoth || rule.Protocol == profile.PortProtocolUDP {
 				hasUDP = true
 				expected["udp|"+ip.String()+"|"+strconv.FormatUint(uint64(port), 10)] = struct{}{}
+			case profile.PortProtocolTCP:
+				hasTCP = true
+				expected["tcp|"+ip.String()+"|"+strconv.FormatUint(uint64(port), 10)] = struct{}{}
+			case profile.PortProtocolUDP:
+				hasUDP = true
+				expected["udp|"+ip.String()+"|"+strconv.FormatUint(uint64(port), 10)] = struct{}{}
+			default:
+				return nil, false, false, fmt.Errorf("profile.network.port[%d].protocol %q is invalid", index, rule.Protocol)
 			}
 		}
 	}

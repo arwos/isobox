@@ -88,7 +88,12 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
 	}
-	command, err := sandbox.BuildCommand(capabilities.Bubblewrap, capabilities.NFT, effectiveProfile, options.ProfilePath, options.AppID, options.Command)
+	network, err := sandbox.PrepareNetwork(capabilities.Network, capabilities.Pasta, capabilities.Slirp4netns)
+	if err != nil {
+		fmt.Fprintf(stderr, "isobox run: cannot prepare network: %v\n", err)
+		return 2
+	}
+	command, err := sandbox.BuildCommand(capabilities.Bubblewrap, capabilities.NFT, effectiveProfile, options.ProfilePath, options.AppID, options.Command, network)
 	if err != nil {
 		fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
@@ -98,8 +103,8 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 	command.Stderr = stderr
 
 	var exitCode int
-	if capabilities.Network.PortForwarder == preflight.BackendPasta && len(effectiveProfile.Network.Ports) != 0 {
-		exitCode, err = sandbox.RunWithPasta(command, capabilities.Pasta, effectiveProfile.Network.Ports)
+	if network.Backend != preflight.BackendNone || network.PortForwarder != preflight.BackendNone {
+		exitCode, err = sandbox.RunWithNetwork(command, network, effectiveProfile.Network.Ports)
 	} else {
 		exitCode, err = sandbox.Run(command)
 	}

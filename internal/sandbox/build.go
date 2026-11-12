@@ -31,14 +31,14 @@ const internalOffGuardCommand = "__isobox_internal_off_guard"
 // BuildCommand creates a bwrap command for the supported portion of the
 // current sandbox profile. Host paths are limited to fixed runtime paths and
 // the mounts explicitly granted by the profile.
-func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, profilePath, appID string, application []string) (*exec.Cmd, error) {
+func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, profilePath, appID string, application []string, network NetworkRuntime) (*exec.Cmd, error) {
 	if bubblewrap == "" {
 		return nil, fmt.Errorf("bwrap executable path is required")
 	}
 	if len(application) == 0 || application[0] == "" {
 		return nil, fmt.Errorf("application command is required")
 	}
-	if err := validateSupportedProfile(config); err != nil {
+	if err := validateSupportedProfile(config, network); err != nil {
 		return nil, err
 	}
 
@@ -69,10 +69,20 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	if err := validateProfileMountTargets(profileMounts); err != nil {
 		return nil, err
 	}
+	if config.NetworkMode == profile.NetworkModeDirect {
+		for _, mount := range profileMounts {
+			if mountTargetsOverlap(mount.target, "/etc/resolv.conf") {
+				return nil, fmt.Errorf("profile mount target %q conflicts with the direct-mode DNS configuration", mount.target)
+			}
+		}
+	}
 	sortProfileMounts(profileMounts)
 
+	offGuard := config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) != 0
+	directNetwork := config.NetworkMode == profile.NetworkModeDirect
+	activeBackend := network.activeBackend()
 	args := []string{"--unshare-user"}
-	if len(config.Network.Ports) == 0 {
+	if !offGuard {
 		args = append(args, "--disable-userns", "--assert-userns-disabled")
 	}
 	args = append(args,
@@ -85,6 +95,9 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	)
 	for _, mount := range systemMounts {
 		args = append(args, "--ro-bind", mount.source, mount.destination)
+	}
+	if directNetwork {
+		args = append(args, "--ro-bind-data", "3", "/etc/resolv.conf")
 	}
 	args = append(args,
 		"--proc", "/proc",
@@ -122,7 +135,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	for _, name := range environment {
 		args = append(args, "--setenv", name, gui.environment[name])
 	}
-	if len(config.Network.Ports) != 0 {
+	if offGuard {
 		if !filepath.IsAbs(nftPath) {
 			return nil, fmt.Errorf("an absolute nftables executable path is required for published ports")
 		}
@@ -137,8 +150,10 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		args = append(args,
 			"--ro-bind", binary, "/tmp/.isobox-internal",
 			"--cap-add", "CAP_NET_ADMIN",
-			"--block-fd", "3",
 		)
+	}
+	if activeBackend != "none" {
+		args = append(args, "--block-fd", "3")
 	}
 	args = append(args,
 		"--unsetenv", "PWD",
@@ -147,7 +162,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		"--json-status-fd", "3",
 		"--",
 	)
-	if len(config.Network.Ports) != 0 {
+	if offGuard {
 		tcpPorts, udpPorts, err := portForwardSpecs(config.Network.Ports)
 		if err != nil {
 			return nil, err
@@ -162,17 +177,61 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	}
 	args = append(args, application...)
 
-	return exec.Command(bubblewrap, args...), nil
+	command := exec.Command(bubblewrap, args...)
+	if directNetwork {
+		resolverFile, err := anonymousDataFile(network.Resolver)
+		if err != nil {
+			return nil, fmt.Errorf("prepare sandbox DNS configuration: %w", err)
+		}
+		command.ExtraFiles = append(command.ExtraFiles, resolverFile)
+	}
+	return command, nil
 }
 
-func validateSupportedProfile(config profile.EffectiveProfile) error {
-	if len(config.Network.Ports) != 0 && config.NetworkMode != profile.NetworkModeOff {
-		return fmt.Errorf("profile.network.port is currently supported only with network mode off; refusing to ignore published ports")
+func validateSupportedProfile(config profile.EffectiveProfile, network NetworkRuntime) error {
+	if network.Mode != config.NetworkMode {
+		return fmt.Errorf("selected network mode %q does not match profile mode %q", network.Mode, config.NetworkMode)
+	}
+	if len(config.Network.Ports) != 0 && config.NetworkMode != profile.NetworkModeOff && config.NetworkMode != profile.NetworkModeDirect {
+		return fmt.Errorf("profile.network.port is not supported with network mode %q; refusing to ignore published ports", config.NetworkMode)
+	}
+	if config.NetworkMode == profile.NetworkModeDirect {
+		if network.activeBackend() == "none" || network.Executable == "" {
+			return fmt.Errorf("direct network mode requires a selected network backend")
+		}
+		if len(network.Resolver) == 0 {
+			return fmt.Errorf("direct network mode requires an explicit sandbox DNS configuration")
+		}
+		return nil
 	}
 	if config.NetworkMode != profile.NetworkModeOff {
-		return fmt.Errorf("profile.network.mode=%q is not supported by the sandbox runtime yet; refusing to launch with different network semantics until F05/F06 is implemented", config.NetworkMode)
+		return fmt.Errorf("profile.network.mode=%q is not supported by the sandbox runtime yet; refusing to launch with different network semantics until F06 is implemented", config.NetworkMode)
+	}
+	if len(config.Network.Ports) != 0 && network.activeBackend() != "pasta" {
+		return fmt.Errorf("network mode off with published ports requires the pasta forwarding backend")
 	}
 	return nil
+}
+
+func anonymousDataFile(data []byte) (*os.File, error) {
+	file, err := os.CreateTemp("", "isobox-data-*")
+	if err != nil {
+		return nil, err
+	}
+	name := file.Name()
+	if err := os.Remove(name); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if _, err := file.Seek(0, 0); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
 }
 
 func portForwardSpecs(rules []profile.PortRule) (string, string, error) {
@@ -187,14 +246,28 @@ func portForwardSpecs(rules []profile.PortRule) (string, string, error) {
 			portRange += "-" + strconv.Itoa(int(rule.EndPort))
 		}
 		forward := ip.String() + "/" + portRange
-		if rule.Protocol == profile.PortProtocolBoth || rule.Protocol == profile.PortProtocolTCP {
+		switch rule.Protocol {
+		case profile.PortProtocolBoth:
 			tcp = append(tcp, forward)
-		}
-		if rule.Protocol == profile.PortProtocolBoth || rule.Protocol == profile.PortProtocolUDP {
 			udp = append(udp, forward)
+		case profile.PortProtocolTCP:
+			tcp = append(tcp, forward)
+		case profile.PortProtocolUDP:
+			udp = append(udp, forward)
+		default:
+			return "", "", fmt.Errorf("profile.network.port[%d].protocol %q is invalid", index, rule.Protocol)
 		}
 	}
 	return strings.Join(tcp, ","), strings.Join(udp, ","), nil
+}
+
+func mountTargetsOverlap(left, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	if left == right || left == string(filepath.Separator) || right == string(filepath.Separator) {
+		return true
+	}
+	return strings.HasPrefix(left, right+string(filepath.Separator)) || strings.HasPrefix(right, left+string(filepath.Separator))
 }
 
 func availableSystemMounts() ([]systemMount, error) {
