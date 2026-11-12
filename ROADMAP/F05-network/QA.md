@@ -16,9 +16,18 @@
 
 - `gofmt -w internal/cli/cli.go internal/preflight/backend.go internal/preflight/preflight.go internal/sandbox/build.go internal/sandbox/forward_linux.go internal/sandbox/network.go internal/sandbox/run_linux.go internal/sandbox/run_other.go internal/sandbox/slirp_linux.go` — прошло.
 - `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — прошло; GVM вывел предупреждение о недоступном stat cache в `/home/user/.gvm/.cache`, на сборку это не повлияло.
+- `gofmt -w internal/sandbox/off_guard_linux.go internal/sandbox/off_guard_linux_test.go` — прошло.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./internal/sandbox` — прошло; тесты проверяют нормализацию/отказ port set, точные input/output/forward default-drop rules и ошибку nft helper.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./...` — прошло.
 - `git diff --check` — прошло.
 - Проверка `pasta --help` подтвердила DNS и PID options, но не показала все explicit network/forwarding options, которые требует preflight; такой pasta не будет выбран. `slirp4netns --help` показывает configure, IPv6, readiness, exit и API socket options.
 - Для T01 ingress и egress-фильтр, а для T02 direct TCP/UDP/DNS и pasta/slirp forwarding остаются не подтверждены.
+
+Дополнительная runtime-попытка T01:
+
+- Профиль `mode off` объявлял `127.0.0.1:39471/tcp`; тестовый `PATH` содержал только symlink на установленные `bwrap`, `pasta`, `nft`. Payload был `/usr/bin/true`.
+- `PATH=/tmp/isobox-f05-off.ec4iL8/bin /tmp/isobox-f05-off.ec4iL8/isobox run --profile=/tmp/isobox-f05-off.ec4iL8/profile.unic --app-id=f05-off -- /usr/bin/true` — exit 2 до сборки/старта sandbox. Preflight сообщил две причины: `bwrap: loopback: Failed to create NETLINK_ROUTE socket: Operation not permitted` и `installed pasta lacks options required to enforce off-mode egress and explicit forwarding`.
+- nft rules и pasta не стартовали, приложение не запускалось. Попытка подтвердила fail-closed preflight, но не проверила host-to-app ingress или egress filter в работающем namespace. Для live-приёмки нужен совместимый passt/pasta и host policy, разрешающая bwrap настраивать loopback/routes.
 
 Дополнительная runtime-попытка T02:
 

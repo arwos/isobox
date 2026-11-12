@@ -167,6 +167,16 @@ func parsePortSet(value string) ([]string, error) {
 }
 
 func installOffFilter(nftPath string, tcpPorts, udpPorts []string) error {
+	command := exec.Command(nftPath, "-f", "-")
+	command.Stdin = bytes.NewBufferString(buildOffFilterRules(tcpPorts, udpPorts))
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("nft -f - failed: %w (%s)", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func buildOffFilterRules(tcpPorts, udpPorts []string) string {
 	var rules strings.Builder
 	rules.WriteString("table inet isobox {\n")
 	rules.WriteString(" chain input { type filter hook input priority -150; policy drop;\n")
@@ -185,14 +195,7 @@ func installOffFilter(nftPath string, tcpPorts, udpPorts []string) error {
 	rules.WriteString(" }\n")
 	rules.WriteString(" chain forward { type filter hook forward priority -150; policy drop; }\n")
 	rules.WriteString("}\n")
-
-	command := exec.Command(nftPath, "-f", "-")
-	command.Stdin = bytes.NewBufferString(rules.String())
-	output, err := command.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("nft -f - failed: %w (%s)", err, strings.TrimSpace(string(output)))
-	}
-	return nil
+	return rules.String()
 }
 
 func dropCapabilities() error {
