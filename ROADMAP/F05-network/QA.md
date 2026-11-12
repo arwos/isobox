@@ -29,7 +29,7 @@
 - `git diff --check` — прошло после изменений.
 - Попытка поднять локальный Unix socket для интеграционной проверки slirp API завершилась `listen unix ...: setsockopt: operation not permitted`. Поэтому API socket обмен не проверен в этой среде; новые тесты изолированно проверяют формирование запроса и обработку ответа, но не заменяют runtime-приёмку.
 - Проверка `pasta --help` подтвердила DNS и PID options, но не показала все explicit network/forwarding options, которые требует preflight; такой pasta не будет выбран. `slirp4netns --help` показывает configure, IPv6, readiness, exit и API socket options.
-- Для T01 ingress и egress-фильтр, а для T02 direct TCP/UDP/DNS и pasta/slirp forwarding остаются не подтверждены.
+- На момент первоначальной проверки для T01 ingress/egress filter, а для T02 direct TCP/UDP/DNS и pasta/slirp forwarding оставались не подтверждены; повторная live-проверка ниже закрыла часть direct/slirp сценариев.
 
 Дополнительная runtime-попытка T01:
 
@@ -43,3 +43,15 @@
 - `PATH=/tmp/isobox-t02-bin /tmp/isobox run --profile=/tmp/isobox-t02-profile.unic --app-id=t02 -- /usr/bin/true` — приложение не запущено. Host preflight отклонил bwrap: `loopback: Failed to create NETLINK_ROUTE socket: Operation not permitted`.
 - Независимая проверка `unshare --user --map-root-user --net nft list tables` также не смогла открыть netlink (`Unable to initialize Netlink socket: Operation not permitted`). Создание user namespace само по себе проходит.
 - Результат не проверяет slirp readiness, DNS или forwarding: bwrap не смог создать пригодную сеть раньше запуска payload. Необходимо повторить live acceptance на хосте, где rootless bwrap разрешено настраивать loopback и маршруты. Fail-closed поведение подтверждено: команда приложения не стартовала.
+
+Повторная live-проверка с разрешением host NETLINK_ROUTE и локальных Unix sockets:
+
+- `bwrap --unshare-user --unshare-net --ro-bind / / --proc /proc --dev /dev /usr/bin/true` — прошло. Тот же запуск без расширенного доступа ранее завершался `NETLINK_ROUTE: Operation not permitted`; ограничение относилось к обычной test оболочке.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build -o /tmp/isobox-f05-live/isobox ./cmd/isobox` — прошло; GVM сообщил, что stat cache в `/home/user/.gvm/.cache` недоступен для записи.
+- `python3 -c 'import ast, pathlib; ast.parse(pathlib.Path("ROADMAP/F05-network/source/slirp_acceptance.py").read_text(encoding="utf-8"))'` — прошло.
+- `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-f05-live/isobox` — прошло при запуске бинарного файла от обычного UID 1000. Временный `PATH` содержал только bwrap и slirp4netns, тем самым выбирался fallback. Проверены: `off` блокирует host-loopback TCP, внешний TCP/UDP и DNS; `off` с портом при отсутствии pasta завершает preflight до payload; direct запускается через slirp4netns 1.2.1; TCP и UDP принимаются на каждом порту профилированного диапазона; привязка `127.0.0.1` не доступна на non-loopback адресе; не объявленный TCP порт отклонён; проходят default DNS и profile DNS `1.1.1.1`, внешний IPv4 TCP handshake и один IPv4 UDP DNS query к `1.1.1.1:53`.
+- Harness вывел `SKIP external IPv6: host has no IPv6 default route`; `ip -6 route show default` вернул пустой результат. Внешнюю IPv6 доступность не считаем проверенной.
+- `pasta --help` не содержит обязательных для `off`/`direct` опций `--config-net`, `--udp-ports`, `--tcp-ns` и `--udp-ns`. Проверочный `off` профиль с опубликованным port и установленным pasta завершился exit 2 с ошибкой `installed pasta lacks options required to enforce off-mode egress and explicit forwarding`; payload marker отсутствовал. Это подтверждает startup fail-closed, но не работу nft guard и ingress.
+- Реальный slirp API обмен и host forwarding проверены harness-ом; он успешно открыл диапазон отдельными TCP/UDP `add_hostfwd` правилами. Повторяемая инструкция: `ROADMAP/F05-network/source/README.md`.
+
+F05 остаётся частично непринятой: нужен host с совместимой pasta для off-mode egress guard/ingress и прямого backend comparison; нужен IPv6 default route для внешней IPv6 матрицы.
