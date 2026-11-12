@@ -11,13 +11,10 @@
 
 Проверено:
 
-- `gofmt -w internal/profile/strict_unic.go internal/profile/decode.go internal/cli/cli.go` — успешно.
+- `gofmt -w internal/profile/strict_unic.go internal/profile/decode_test.go` — успешно.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./...` — первый запуск остановился на vet-диагностике dynamic format в `strictUNICParser.expect`; после замены на `"%s", message` повторный запуск прошёл. Добавлены проверки round-trip вложенного профиля, отказа неизвестного поля/отсутствующего mount source и merge system → user → profile. Другие пакеты пока сообщают `[no test files]`.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — успешно; GVM вывел предупреждение о недоступном stat cache в read-only `/home/user/.gvm/.cache`.
 - `git diff --check` — без замечаний.
-- `go build ./...` — exit 0; GVM вывел предупреждение о недоступном stat cache в read-only `/home/user/.gvm/.cache`.
 - Проверены исходники go-unic v1.0.2: неизвестные поля struct пропускаются, повторные одиночные поля дают ошибку, повторные slice fields собираются decoder в slice.
 
-Не запускалось:
-
-- Тесты и сценарии decode/round-trip не добавлялись и не запускались.
-
-Статические проверки компиляции не подтверждают runtime поведение файловых mounts, сети или proxy.
+Эти тесты проверяют decode/merge, но не runtime поведение filesystem mounts, сети или proxy.

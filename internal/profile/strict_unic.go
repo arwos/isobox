@@ -401,7 +401,7 @@ func (p *strictUNICParser) expect(kind strictTokenKind, message string) error {
 		return err
 	}
 	if token.kind != kind {
-		return p.errorAt(token.line, token.column, message)
+		return p.errorAt(token.line, token.column, "%s", message)
 	}
 	return nil
 }
