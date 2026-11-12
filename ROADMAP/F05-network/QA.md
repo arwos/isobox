@@ -70,3 +70,9 @@ F05 остаётся частично непринятой: F05-T01 требуе
 - `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-f05-current` — прошло: `off` без ports блокирует host-loopback, внешний TCP/UDP и DNS; direct/slirp подтверждает DNS override, IPv4 TCP/UDP и явный host-forward диапазон. Внешний IPv6 пропущен, потому что host не имеет IPv6 default route.
 - `python3 ROADMAP/F05-network/source/pasta_off_acceptance.py /tmp/isobox-f05-current` — harness запустил pasta и дошёл до nft helper, но завершился до `READY`: `nft -f - failed: exit status 1 (netlink: Error: cache initialization failed: Operation not permitted)`. Payload не был запущен. Это подтверждает fail-closed при запрете netlink, но не подтверждает работу правил, host ingress или ответы на входящие TCP/UDP.
 - Сценарий успешной приёмки off+ports сохранён в `source/pasta_off_acceptance.py`; запускать его нужно на хосте, где nft разрешено изменять firewall внутри rootless network namespace. Пока эта проверка не проходит до payload, F05-T01 остаётся `[!]`.
+
+Повторная попытка с расширенным доступом:
+
+- `python3 ROADMAP/F05-network/source/pasta_off_acceptance.py /tmp/isobox-f05-current` — завершилась с ошибкой до запуска payload: `pasta exited during startup: Couldn't switch to pasta namespaces: Operation not permitted`.
+- Этот запуск не дошёл до nft helper и не проверил ingress/egress; ранее обычный запуск доходил до nft и завершался `netlink: Error: cache initialization failed: Operation not permitted`. Оба сценария подтверждают отказ до приложения, но не заменяют успешную сетевую приёмку.
+- Для полного acceptance нужен host environment, в котором pasta может подключиться к bwrap network namespace и nft может применить правила внутри него.
