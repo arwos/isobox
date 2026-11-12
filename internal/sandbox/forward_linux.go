@@ -3,6 +3,7 @@
 package sandbox
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -293,6 +294,10 @@ func (process *pastaProcess) netNamespaceSockets(owned map[string]struct{}) (map
 }
 
 func parseProcEndpoint(value string) (string, uint16, error) {
+	return parseProcEndpointWithByteOrder(value, binary.NativeEndian)
+}
+
+func parseProcEndpointWithByteOrder(value string, byteOrder binary.ByteOrder) (string, uint16, error) {
 	addressText, portText, ok := strings.Cut(value, ":")
 	if !ok {
 		return "", 0, fmt.Errorf("invalid proc socket endpoint %q", value)
@@ -301,15 +306,20 @@ func parseProcEndpoint(value string) (string, uint16, error) {
 	if err != nil {
 		return "", 0, err
 	}
+	littleEndian := byteOrder.Uint16([]byte{1, 0}) == 1
 	switch len(addressBytes) {
 	case net.IPv4len:
-		for left, right := 0, len(addressBytes)-1; left < right; left, right = left+1, right-1 {
-			addressBytes[left], addressBytes[right] = addressBytes[right], addressBytes[left]
+		if littleEndian {
+			for left, right := 0, len(addressBytes)-1; left < right; left, right = left+1, right-1 {
+				addressBytes[left], addressBytes[right] = addressBytes[right], addressBytes[left]
+			}
 		}
 	case net.IPv6len:
-		for group := 0; group < len(addressBytes); group += 4 {
-			addressBytes[group], addressBytes[group+3] = addressBytes[group+3], addressBytes[group]
-			addressBytes[group+1], addressBytes[group+2] = addressBytes[group+2], addressBytes[group+1]
+		if littleEndian {
+			for group := 0; group < len(addressBytes); group += 4 {
+				addressBytes[group], addressBytes[group+3] = addressBytes[group+3], addressBytes[group]
+				addressBytes[group+1], addressBytes[group+2] = addressBytes[group+2], addressBytes[group+1]
+			}
 		}
 	default:
 		return "", 0, fmt.Errorf("invalid proc address length %d", len(addressBytes))

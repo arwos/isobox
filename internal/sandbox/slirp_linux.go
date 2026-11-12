@@ -126,45 +126,19 @@ func (process *slirpProcess) configureForwards(rules []profile.PortRule) error {
 	if len(rules) == 0 {
 		return nil
 	}
+	forwards, err := expandSlirpHostForwards(rules)
+	if err != nil {
+		return err
+	}
 	if process.apiSocket == "" {
 		return fmt.Errorf("slirp4netns API socket is unavailable for declared host ports")
 	}
 	if err := waitForSlirpAPI(process.apiSocket); err != nil {
 		return err
 	}
-	for index, rule := range rules {
-		address := net.ParseIP(rule.HostAddress)
-		if address == nil || address.To4() == nil {
-			return fmt.Errorf("profile.network.port[%d].host_address is not supported by slirp4netns", index)
-		}
-		start, end := rule.Port, rule.Port
-		if rule.EndPort != 0 {
-			end = rule.EndPort
-		}
-		for port := uint32(start); port <= uint32(end); port++ {
-			var protocols []string
-			switch rule.Protocol {
-			case profile.PortProtocolBoth:
-				protocols = []string{"tcp", "udp"}
-			case profile.PortProtocolTCP:
-				protocols = []string{"tcp"}
-			case profile.PortProtocolUDP:
-				protocols = []string{"udp"}
-			default:
-				return fmt.Errorf("profile.network.port[%d].protocol %q is invalid", index, rule.Protocol)
-			}
-			for _, protocol := range protocols {
-				forward := slirpHostForward{
-					Protocol:  protocol,
-					HostAddr:  address.String(),
-					HostPort:  int(port),
-					GuestAddr: slirpGuestAddress,
-					GuestPort: int(port),
-				}
-				if err := slirpAddHostForward(process.apiSocket, forward); err != nil {
-					return fmt.Errorf("add slirp4netns %s host forward %s:%d: %w", protocol, address, port, err)
-				}
-			}
+	for _, forward := range forwards {
+		if err := slirpAddHostForward(process.apiSocket, forward); err != nil {
+			return fmt.Errorf("add slirp4netns %s host forward %s:%d: %w", forward.Protocol, forward.HostAddr, forward.HostPort, err)
 		}
 	}
 	select {
@@ -173,6 +147,43 @@ func (process *slirpProcess) configureForwards(rules []profile.PortRule) error {
 	default:
 		return nil
 	}
+}
+
+func expandSlirpHostForwards(rules []profile.PortRule) ([]slirpHostForward, error) {
+	var forwards []slirpHostForward
+	for index, rule := range rules {
+		address := net.ParseIP(rule.HostAddress)
+		if address == nil || address.To4() == nil {
+			return nil, fmt.Errorf("profile.network.port[%d].host_address is not supported by slirp4netns", index)
+		}
+		start, end := rule.Port, rule.Port
+		if rule.EndPort != 0 {
+			end = rule.EndPort
+		}
+		var protocols []string
+		switch rule.Protocol {
+		case profile.PortProtocolBoth:
+			protocols = []string{"tcp", "udp"}
+		case profile.PortProtocolTCP:
+			protocols = []string{"tcp"}
+		case profile.PortProtocolUDP:
+			protocols = []string{"udp"}
+		default:
+			return nil, fmt.Errorf("profile.network.port[%d].protocol %q is invalid", index, rule.Protocol)
+		}
+		for port := uint32(start); port <= uint32(end); port++ {
+			for _, protocol := range protocols {
+				forwards = append(forwards, slirpHostForward{
+					Protocol:  protocol,
+					HostAddr:  address.String(),
+					HostPort:  int(port),
+					GuestAddr: slirpGuestAddress,
+					GuestPort: int(port),
+				})
+			}
+		}
+	}
+	return forwards, nil
 }
 
 func (process *slirpProcess) stop() {
@@ -242,16 +253,9 @@ func waitForSlirpAPI(socketPath string) error {
 }
 
 func slirpAddHostForward(socketPath string, forward slirpHostForward) error {
-	request := struct {
-		Execute   string           `json:"execute"`
-		Arguments slirpHostForward `json:"arguments"`
-	}{Execute: "add_hostfwd", Arguments: forward}
-	encoded, err := json.Marshal(request)
+	encoded, err := slirpHostForwardRequest(forward)
 	if err != nil {
 		return err
-	}
-	if len(encoded) >= 4096 {
-		return fmt.Errorf("API request exceeds the 4096-byte limit")
 	}
 	connection, err := net.DialTimeout("unix", socketPath, 3*time.Second)
 	if err != nil {
@@ -276,6 +280,25 @@ func slirpAddHostForward(socketPath string, forward slirpHostForward) error {
 	if len(responseData) > 4096 {
 		return fmt.Errorf("API response exceeds 4096 bytes")
 	}
+	return validateSlirpHostForwardResponse(responseData)
+}
+
+func slirpHostForwardRequest(forward slirpHostForward) ([]byte, error) {
+	request := struct {
+		Execute   string           `json:"execute"`
+		Arguments slirpHostForward `json:"arguments"`
+	}{Execute: "add_hostfwd", Arguments: forward}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return nil, err
+	}
+	if len(encoded) >= 4096 {
+		return nil, fmt.Errorf("API request exceeds the 4096-byte limit")
+	}
+	return encoded, nil
+}
+
+func validateSlirpHostForwardResponse(responseData []byte) error {
 	var response struct {
 		Return json.RawMessage `json:"return"`
 		Error  json.RawMessage `json:"error"`

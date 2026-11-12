@@ -22,6 +22,12 @@
 - `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./internal/preflight` — прошло; проверки покрывают отсутствие backend для `off` без ports, требования off guard, приоритет pasta, slirp fallback и отказ от IPv6 host forward на slirp.
 - `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./...` — прошло.
 - `git diff --check` — прошло.
+- `gofmt -w internal/sandbox/forward_linux.go internal/sandbox/slirp_linux.go internal/sandbox/forward_linux_test.go` — прошло.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./internal/sandbox` — прошло; новые unit-тесты проверяют native-endian разбор `/proc` endpoints, разворачивание slirp TCP/UDP правил и диапазонов, JSON для `add_hostfwd` и fail-closed разбор ответов API.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./...` — прошло после изменений.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — прошло; GVM сообщил, что stat cache в `/home/user/.gvm/.cache` недоступен для записи.
+- `git diff --check` — прошло после изменений.
+- Попытка поднять локальный Unix socket для интеграционной проверки slirp API завершилась `listen unix ...: setsockopt: operation not permitted`. Поэтому API socket обмен не проверен в этой среде; новые тесты изолированно проверяют формирование запроса и обработку ответа, но не заменяют runtime-приёмку.
 - Проверка `pasta --help` подтвердила DNS и PID options, но не показала все explicit network/forwarding options, которые требует preflight; такой pasta не будет выбран. `slirp4netns --help` показывает configure, IPv6, readiness, exit и API socket options.
 - Для T01 ingress и egress-фильтр, а для T02 direct TCP/UDP/DNS и pasta/slirp forwarding остаются не подтверждены.
 
