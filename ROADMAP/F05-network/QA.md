@@ -54,7 +54,7 @@
 - `pasta --help` не содержит обязательных для `off`/`direct` опций `--config-net`, `--udp-ports`, `--tcp-ns` и `--udp-ns`. Проверочный `off` профиль с опубликованным port и установленным pasta завершился exit 2 с ошибкой `installed pasta lacks options required to enforce off-mode egress and explicit forwarding`; payload marker отсутствовал. Это подтверждает startup fail-closed, но не работу nft guard и ingress.
 - Реальный slirp API обмен и host forwarding проверены harness-ом; он успешно открыл диапазон отдельными TCP/UDP `add_hostfwd` правилами. Повторяемая инструкция: `ROADMAP/F05-network/source/README.md`.
 
-F05 остаётся частично непринятой: F05-T01 требует хост, где nft может применять правила в rootless network namespace; F05-T02 требует runtime comparison с pasta и IPv6 default route. Актуальные результаты после исправления preflight и readiness записаны ниже.
+На момент этой записи F05-T01 требовала host acceptance для nft ingress, а F05-T02 — runtime comparison pasta/slirp и IPv6 route. Runtime comparison IPv4 выполнено в последующем прогоне ниже; nft ingress и внешняя IPv6-приёмка остаются открыты.
 
 ## Повторная проверка F05-T01 и regression acceptance
 
@@ -76,3 +76,17 @@ F05 остаётся частично непринятой: F05-T01 требуе
 - `python3 ROADMAP/F05-network/source/pasta_off_acceptance.py /tmp/isobox-f05-current` — завершилась с ошибкой до запуска payload: `pasta exited during startup: Couldn't switch to pasta namespaces: Operation not permitted`.
 - Этот запуск не дошёл до nft helper и не проверил ingress/egress; ранее обычный запуск доходил до nft и завершался `netlink: Error: cache initialization failed: Operation not permitted`. Оба сценария подтверждают отказ до приложения, но не заменяют успешную сетевую приёмку.
 - Для полного acceptance нужен host environment, в котором pasta может подключиться к bwrap network namespace и nft может применить правила внутри него.
+
+## Direct backend comparison and runtime fallback
+
+Выполнено после добавления переключения на заранее проверенный slirp, если pasta не готов до открытия bwrap gate:
+
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./...` — прошло; покрыты выбор совместимого fallback, отказ fallback для loopback DNS/IPv6 host bind, подготовка общих resolver-адресов, cleanup pasta при переключении и fail-closed при ошибке обоих backend.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build -o /tmp/isobox-f05-fallback ./cmd/isobox` — прошло. GVM сообщил, что stat cache в `/home/user/.gvm/.cache` недоступен для записи; exit code сборки 0.
+- Парсинг `ROADMAP/F05-network/source/slirp_acceptance.py` через `ast.parse` и `git diff --check` — прошли.
+- `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-f05-fallback --backend slirp` — прошло: `off` без ports блокирует host-loopback/external TCP/UDP/DNS; `off` с ports fail-closed без pasta; direct проверяет TCP+UDP диапазон, TCP-only/UDP-only одиночные порты, точный `127.0.0.1` bind, undeclared-port отказ, default/profile DNS и внешний IPv4 TCP/UDP.
+- `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-f05-fallback --backend auto` — прошло с обычным pasta-first выбором (оба executable были доступны, preflight capability test выбирает pasta); direct port/DNS/IPv4 TCP/UDP сценарии прошли без fallback warning.
+- `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-f05-fallback --backend auto --simulate-pasta-failure --local-only` — прошло. Wrapper пропускает реальные pasta capability probes, но отказывает при runtime start; isobox пишет fallback diagnostic и до открытия приложения поднимает slirp. Диапазон и оба protocol-specific single ports доступны только по своим правилам.
+- `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-f05-fallback --backend auto --simulate-pasta-failure --dns-only` — прошло: после injected pasta startup failure через slirp работают host-default DNS, profile DNS `1.1.1.1`, внешний IPv4 TCP и UDP.
+- Во всех полных прогонах внешний IPv6 пропущен: host не имеет IPv6 default route. Это остаётся незакрытой частью T02.
+- Один повтор `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-f05-fallback --backend pasta` прошёл диапазон, но остановился на TCP-only setup из-за `Couldn't switch to pasta namespaces: Operation not permitted`; приложение не запустилось. В некоторых отдельных запусках slirp также возвращал `setns(CLONE_NEWNET): Operation not permitted`; запуск оставался за startup gate. Полные slirp и auto pasta-first прогоны, а также локальный и DNS acceptance injected fallback выше прошли. Если оба backend откажут, запуск остаётся fail-closed.

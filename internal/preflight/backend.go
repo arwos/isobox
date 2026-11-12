@@ -22,10 +22,13 @@ const (
 // builder. Host forwards are explicit; a backend must never add automatic
 // forwarding behind the profile's back.
 type BackendSelection struct {
-	Mode                       profile.NetworkMode
-	Network                    BackendKind
-	PortForwarder              BackendKind
-	HostForwards               []profile.PortRule
+	Mode          profile.NetworkMode
+	Network       BackendKind
+	PortForwarder BackendKind
+	HostForwards  []profile.PortRule
+	// FallbackNetwork is set only for direct mode after the same port and DNS
+	// policy has been checked against the fallback backend.
+	FallbackNetwork            BackendKind
 	DisableAutomaticForwarding bool
 	EnforceEgressFilter        bool
 	EnableIPv6                 bool
@@ -39,10 +42,11 @@ type BackendSelection struct {
 // helper cannot preserve the profile's network policy.
 func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (BackendSelection, error) {
 	selection := BackendSelection{
-		Mode:         config.NetworkMode,
-		DNSAddress:   config.DNSServer,
-		UseHostDNS:   config.DNSServer == "",
-		HostForwards: append([]profile.PortRule(nil), config.Network.Ports...),
+		Mode:            config.NetworkMode,
+		DNSAddress:      config.DNSServer,
+		UseHostDNS:      config.DNSServer == "",
+		HostForwards:    append([]profile.PortRule(nil), config.Network.Ports...),
+		FallbackNetwork: BackendNone,
 	}
 
 	switch config.NetworkMode {
@@ -87,6 +91,11 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 	pastaSupported := capabilities.Pasta != "" && capabilities.PastaInspectionError == "" && hasAllOptions(capabilities.PastaOptions,
 		"--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns",
 		"--quiet", "--foreground", "--pid", "--dns-forward", "--dns-host")
+	slirpSupported := capabilities.Slirp4netns != "" && capabilities.SlirpInspectionError == "" && hasAllOptions(capabilities.Slirp4netnsOptions,
+		"--configure", "--enable-ipv6", "--ready-fd", "--exit-fd")
+	if len(config.Network.Ports) != 0 {
+		slirpSupported = slirpSupported && hasAllOptions(capabilities.Slirp4netnsOptions, "--api-socket")
+	}
 	if pastaSupported {
 		if err := validateHostForwards(config.Network.Ports, false); err != nil {
 			return BackendSelection{}, err
@@ -95,14 +104,12 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 		selection.PortForwarder = BackendPasta
 		selection.DisableAutomaticForwarding = true
 		selection.EnableIPv6 = true
+		if slirpSupported && directFallbackDNSCompatible(config.DNSServer) && validateHostForwards(config.Network.Ports, true) == nil {
+			selection.FallbackNetwork = BackendSlirp4netns
+		}
 		return selection, nil
 	}
 
-	slirpSupported := capabilities.Slirp4netns != "" && capabilities.SlirpInspectionError == "" && hasAllOptions(capabilities.Slirp4netnsOptions,
-		"--configure", "--enable-ipv6", "--ready-fd", "--exit-fd")
-	if len(config.Network.Ports) != 0 {
-		slirpSupported = slirpSupported && hasAllOptions(capabilities.Slirp4netnsOptions, "--api-socket")
-	}
 	if slirpSupported {
 		if err := validateHostForwards(config.Network.Ports, true); err != nil {
 			return BackendSelection{}, fmt.Errorf("pasta is unavailable and slirp4netns cannot preserve the profile: %w", err)
@@ -141,6 +148,14 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 		reasons = append(reasons, "slirp4netns lacks the explicit host-forward API")
 	}
 	return BackendSelection{}, fmt.Errorf("no available network backend can preserve this direct profile: %s", strings.Join(reasons, "; "))
+}
+
+func directFallbackDNSCompatible(address string) bool {
+	if address == "" {
+		return true
+	}
+	ip := net.ParseIP(address)
+	return ip != nil && !ip.IsLoopback() && !ip.IsUnspecified() && !ip.IsMulticast() && !ip.IsLinkLocalUnicast()
 }
 
 func offPastaRequiredOptions(rules []profile.PortRule) []string {

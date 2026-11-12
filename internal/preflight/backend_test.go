@@ -14,6 +14,7 @@ func TestSelectBackend(t *testing.T) {
 		capabilities  Capabilities
 		wantNetwork   BackendKind
 		wantForwarder BackendKind
+		wantFallback  BackendKind
 		wantFilter    bool
 		wantErr       string
 	}{
@@ -29,6 +30,37 @@ func TestSelectBackend(t *testing.T) {
 		{
 			name:   "direct prefers capable pasta",
 			config: directTestProfile(nil),
+			capabilities: Capabilities{
+				Pasta:              "/usr/bin/pasta",
+				PastaOptions:       testOptionSet("--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns", "--quiet", "--foreground", "--pid", "--dns-forward", "--dns-host"),
+				Slirp4netns:        "/usr/bin/slirp4netns",
+				Slirp4netnsOptions: testOptionSet("--configure", "--enable-ipv6", "--ready-fd", "--exit-fd"),
+			},
+			wantNetwork:   BackendPasta,
+			wantForwarder: BackendPasta,
+			wantFallback:  BackendSlirp4netns,
+		},
+		{
+			name: "direct does not offer slirp fallback for an IPv6 host bind",
+			config: directTestProfile([]profile.PortRule{{
+				HostAddress: "::1", Port: 8123, Protocol: profile.PortProtocolTCP,
+			}}),
+			capabilities: Capabilities{
+				Pasta:              "/usr/bin/pasta",
+				PastaOptions:       testOptionSet("--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns", "--quiet", "--foreground", "--pid", "--dns-forward", "--dns-host"),
+				Slirp4netns:        "/usr/bin/slirp4netns",
+				Slirp4netnsOptions: testOptionSet("--configure", "--enable-ipv6", "--ready-fd", "--exit-fd", "--api-socket"),
+			},
+			wantNetwork:   BackendPasta,
+			wantForwarder: BackendPasta,
+		},
+		{
+			name: "direct does not offer slirp fallback for loopback DNS override",
+			config: func() profile.EffectiveProfile {
+				config := directTestProfile(nil)
+				config.DNSServer = "127.0.0.1"
+				return config
+			}(),
 			capabilities: Capabilities{
 				Pasta:              "/usr/bin/pasta",
 				PastaOptions:       testOptionSet("--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns", "--quiet", "--foreground", "--pid", "--dns-forward", "--dns-host"),
@@ -147,10 +179,37 @@ func TestSelectBackend(t *testing.T) {
 			if err != nil {
 				t.Fatalf("SelectBackend() error = %v", err)
 			}
-			if got.Network != test.wantNetwork || got.PortForwarder != test.wantForwarder || got.EnforceEgressFilter != test.wantFilter {
-				t.Fatalf("SelectBackend() = (network=%q forwarder=%q filter=%t), want (%q, %q, %t)",
-					got.Network, got.PortForwarder, got.EnforceEgressFilter,
-					test.wantNetwork, test.wantForwarder, test.wantFilter)
+			wantFallback := test.wantFallback
+			if wantFallback == "" {
+				wantFallback = BackendNone
+			}
+			if got.Network != test.wantNetwork || got.PortForwarder != test.wantForwarder || got.FallbackNetwork != wantFallback || got.EnforceEgressFilter != test.wantFilter {
+				t.Fatalf("SelectBackend() = (network=%q forwarder=%q fallback=%q filter=%t), want (%q, %q, %q, %t)",
+					got.Network, got.PortForwarder, got.FallbackNetwork, got.EnforceEgressFilter,
+					test.wantNetwork, test.wantForwarder, wantFallback, test.wantFilter)
+			}
+		})
+	}
+}
+
+func TestDirectFallbackDNSCompatible(t *testing.T) {
+	tests := []struct {
+		address string
+		want    bool
+	}{
+		{address: "", want: true},
+		{address: "192.0.2.53", want: true},
+		{address: "2001:db8::53", want: true},
+		{address: "127.0.0.1", want: false},
+		{address: "::1", want: false},
+		{address: "0.0.0.0", want: false},
+		{address: "224.0.0.1", want: false},
+		{address: "169.254.1.1", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.address, func(t *testing.T) {
+			if got := directFallbackDNSCompatible(test.address); got != test.want {
+				t.Fatalf("directFallbackDNSCompatible(%q) = %t, want %t", test.address, got, test.want)
 			}
 		})
 	}

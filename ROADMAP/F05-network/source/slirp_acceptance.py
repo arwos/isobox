@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Live acceptance checks for the rootless slirp4netns network backend."""
+"""Live acceptance checks for rootless direct network backends."""
 
 import argparse
 import os
 import pathlib
+import select
+import shlex
 import shutil
 import socket
 import subprocess
@@ -54,7 +56,7 @@ def create_environment(root, path_dir):
     return environment
 
 
-def write_profile(root, mode, dns="", port_range=None):
+def write_profile(root, mode, dns="", port_range=None, protocol=""):
     root.mkdir(parents=True, exist_ok=True)
     home = root / "sandbox-home"
     home.mkdir(mode=0o700)
@@ -69,6 +71,7 @@ def write_profile(root, mode, dns="", port_range=None):
                 "    host_address '127.0.0.1';",
                 f"    port {start};",
                 f"    end_port {end};",
+                *([f"    protocol {protocol};"] if protocol else []),
                 "  }",
             ]
         )
@@ -185,7 +188,7 @@ def test_off_ports_fail_closed(binary, environment, root):
     print("PASS off mode with ports fails closed when pasta is unavailable")
 
 
-def test_direct_external(binary, environment, root, dns=""):
+def test_direct_external(binary, environment, root, dns="", backend="slirp", expect_fallback=False):
     profile = write_profile(root, "direct", dns=dns)
     app = """
         import socket, struct
@@ -205,14 +208,19 @@ def test_direct_external(binary, environment, root, dns=""):
             raise SystemExit("invalid or failed external UDP DNS response")
         print("direct DNS, external TCP, and external IPv4 UDP passed")
     """
-    stdout, _ = run_isobox(binary, profile, environment, app)
+    stdout, stderr = run_isobox(binary, profile, environment, app)
     if "direct DNS, external TCP, and external IPv4 UDP passed" not in stdout:
         raise RuntimeError(f"direct external payload did not report success: {stdout!r}")
-    label = f"profile DNS {dns}" if dns else "slirp default DNS"
+    fallback_used = "trying compatible slirp4netns fallback" in stderr
+    if expect_fallback and not fallback_used:
+        raise RuntimeError(f"pasta failure did not report the validated slirp fallback:\n{stderr}")
+    label = f"profile DNS {dns}" if dns else f"{backend} default DNS"
+    if fallback_used:
+        label += " via slirp4netns fallback"
     print(f"PASS {label}, external IPv4 TCP, and external IPv4 UDP")
 
 
-def test_direct_forwards(binary, environment, root):
+def test_direct_forwards(binary, environment, root, expect_fallback=False):
     start, reservations = reserve_port_range()
     for reservation in reservations:
         reservation.close()
@@ -286,7 +294,18 @@ def test_direct_forwards(binary, environment, root):
             except OSError:
                 time.sleep(0.1)
         else:
-            raise RuntimeError("declared TCP forward did not become ready")
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=3)
+            stdout, stderr = process.communicate()
+            raise RuntimeError(
+                "declared TCP forward did not become ready; "
+                f"isobox exit={process.returncode}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+            )
 
         external_address = routed_host_ipv4()
         if external_address:
@@ -332,9 +351,142 @@ def test_direct_forwards(binary, environment, root):
             raise RuntimeError(
                 f"isobox exited {returncode}\nstdout:\n{stdout}\nstderr:\n{stderr}"
             )
+        fallback_used = "trying compatible slirp4netns fallback" in stderr
+        if expect_fallback and not fallback_used:
+            raise RuntimeError(f"pasta failure did not report the validated slirp fallback:\n{stderr}")
         print(
             f"PASS explicit loopback host bind, TCP and UDP on range {start}-{start + 1}; "
             f"{bind_result}; undeclared TCP {start + 2} refused"
+            + ("; runtime fallback used slirp4netns" if fallback_used else "")
+        )
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=3)
+        process.communicate()
+
+
+def test_direct_single_protocol(binary, environment, root, protocol):
+    start, reservations = reserve_port_range()
+    for reservation in reservations:
+        reservation.close()
+    profile = write_profile(root, "direct", port_range=(start, start), protocol=protocol)
+    app = """
+        import select, socket, sys
+        port = int(sys.argv[1])
+        tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        tcp.bind(("0.0.0.0", port))
+        tcp.listen(1)
+        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp.bind(("0.0.0.0", port))
+        print("READY", flush=True)
+        ready, _, _ = select.select([tcp, udp], [], [], 20)
+        if not ready:
+            raise SystemExit("timed out waiting for the announced protocol")
+        selected = ready[0]
+        if selected is tcp:
+            connection, _ = tcp.accept()
+            connection.sendall(b"tcp:" + connection.recv(64))
+            connection.close()
+            print("DONE tcp", flush=True)
+        else:
+            payload, address = udp.recvfrom(64)
+            udp.sendto(b"udp:" + payload, address)
+            print("DONE udp", flush=True)
+    """
+    command = [
+        str(binary),
+        "run",
+        f"--profile={profile}",
+        "--app-id=f05-acceptance",
+        "--",
+        "/usr/bin/python3",
+        "-c",
+        textwrap.dedent(app),
+        str(start),
+    ]
+    process = subprocess.Popen(
+        command,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        stdout_parts = []
+        stderr_parts = []
+        marker = ""
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and process.poll() is None and marker != "READY":
+            ready, _, _ = select.select([process.stdout, process.stderr], [], [], 0.25)
+            if process.stdout in ready:
+                line = process.stdout.readline()
+                if line:
+                    marker = line.strip()
+                    stdout_parts.append(line)
+            if process.stderr in ready:
+                chunk = os.read(process.stderr.fileno(), 8192)
+                if chunk:
+                    stderr_parts.append(chunk.decode("utf-8", errors="replace"))
+        if marker != "READY":
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=3)
+            stdout, stderr = process.communicate()
+            raise RuntimeError(
+                f"{protocol}-only app did not become ready\n"
+                f"stdout:\n{''.join(stdout_parts)}{stdout}"
+                f"\nstderr:\n{''.join(stderr_parts)}{stderr}"
+            )
+
+        if protocol == "tcp":
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+                client.settimeout(0.75)
+                client.sendto(b"must-not-forward", ("127.0.0.1", start))
+                try:
+                    response, _ = client.recvfrom(64)
+                except (OSError, socket.timeout):
+                    pass
+                else:
+                    raise RuntimeError(f"TCP-only rule forwarded UDP unexpectedly: {response!r}")
+            with socket.create_connection(("127.0.0.1", start), timeout=5) as client:
+                client.sendall(b"probe")
+                if client.recv(64) != b"tcp:probe":
+                    raise RuntimeError("TCP-only forward returned an unexpected response")
+        else:
+            try:
+                unexpected = socket.create_connection(("127.0.0.1", start), timeout=1)
+            except OSError:
+                pass
+            else:
+                unexpected.close()
+                raise RuntimeError("UDP-only rule exposed a TCP listener on the host")
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+                client.settimeout(5)
+                client.sendto(b"probe", ("127.0.0.1", start))
+                response, _ = client.recvfrom(64)
+                if response != b"udp:probe":
+                    raise RuntimeError("UDP-only forward returned an unexpected response")
+
+        stdout, stderr = process.communicate(timeout=10)
+        if process.returncode != 0 or f"DONE {protocol}" not in stdout:
+            raise RuntimeError(
+                f"{protocol}-only acceptance exited {process.returncode}\n"
+                f"stdout:\n{stdout}\nstderr:\n{stderr}"
+            )
+        fallback_used = "trying compatible slirp4netns fallback" in stderr
+        print(
+            f"PASS {protocol}-only single-port forward; other protocol stayed closed"
+            + ("; runtime fallback used slirp4netns" if fallback_used else "")
         )
     finally:
         if process.poll() is None:
@@ -375,9 +527,20 @@ def has_host_ipv6_default_route():
 
 
 def test_direct_ipv6(binary, environment, root):
-    profile = write_profile(root, "direct")
+    resolver = "2606:4700:4700::1111"
+    profile = write_profile(root, "direct", dns=resolver)
     app = """
-        import socket
+        import socket, struct
+        resolver = "2606:4700:4700::1111"
+        query = struct.pack("!HHHHHH", 0x4958, 0x0100, 1, 0, 0, 0)
+        query += b"\\x07example\\x03com\\x00" + struct.pack("!HH", 28, 1)
+        udp = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        udp.settimeout(8)
+        udp.sendto(query, (resolver, 53, 0, 0))
+        response, _ = udp.recvfrom(2048)
+        udp.close()
+        if len(response) < 12 or response[:2] != query[:2] or not (response[2] & 0x80) or response[3] & 0x0f or response[6:8] == b"\\x00\\x00":
+            raise SystemExit("invalid or failed IPv6 UDP DNS response")
         answers = socket.getaddrinfo("example.com", 443, socket.AF_INET6, socket.SOCK_STREAM)
         if not answers:
             raise SystemExit("IPv6 DNS returned no addresses")
@@ -385,12 +548,12 @@ def test_direct_ipv6(binary, environment, root):
         connection.settimeout(10)
         connection.connect(answers[0][4])
         connection.close()
-        print("external IPv6 TCP connect passed")
+        print("external IPv6 DNS, TCP, and UDP passed")
     """
     stdout, _ = run_isobox(binary, profile, environment, app)
-    if "external IPv6 TCP connect passed" not in stdout:
+    if "external IPv6 DNS, TCP, and UDP passed" not in stdout:
         raise RuntimeError(f"IPv6 payload did not report success: {stdout!r}")
-    print("PASS external IPv6 DNS and TCP")
+    print(f"PASS profile IPv6 DNS {resolver}, external IPv6 TCP and UDP")
 
 
 def main():
@@ -401,7 +564,27 @@ def main():
         action="store_true",
         help="skip public DNS/TCP/UDP probes; still test local forwarding and off mode",
     )
+    parser.add_argument(
+        "--backend",
+        choices=("slirp", "pasta", "auto"),
+        default="slirp",
+        help="force one backend, or use automatic pasta-first selection (default: slirp)",
+    )
+    parser.add_argument(
+        "--simulate-pasta-failure",
+        action="store_true",
+        help="make pasta pass capability probes but fail at runtime; requires --backend auto",
+    )
+    parser.add_argument(
+        "--dns-only",
+        action="store_true",
+        help="run only direct-mode DNS and outbound IPv4/IPv6 connectivity probes",
+    )
     args = parser.parse_args()
+    if args.simulate_pasta_failure and args.backend != "auto":
+        parser.error("--simulate-pasta-failure requires --backend auto")
+    if args.dns_only and args.local_only:
+        parser.error("--dns-only cannot be combined with --local-only")
     binary = args.isobox.resolve()
     if not binary.is_file() or not os.access(binary, os.X_OK):
         parser.error(f"{binary} is not an executable file")
@@ -409,29 +592,103 @@ def main():
         parser.error("run acceptance as an ordinary user, not root")
 
     bwrap = shutil.which("bwrap")
+    pasta = shutil.which("pasta")
     slirp = shutil.which("slirp4netns")
-    if not bwrap or not slirp:
-        parser.error("bwrap and slirp4netns must be installed and available in PATH")
+    if not bwrap:
+        parser.error("bwrap must be installed and available in PATH")
+    if args.backend == "slirp" and not slirp:
+        parser.error("slirp4netns must be installed and available in PATH")
+    if args.backend == "pasta" and not pasta:
+        parser.error("pasta must be installed and available in PATH")
+    if args.backend == "auto" and not (pasta or slirp):
+        parser.error("pasta or slirp4netns must be installed and available in PATH")
+    if args.simulate_pasta_failure and not (pasta and slirp):
+        parser.error("--simulate-pasta-failure requires installed pasta and slirp4netns")
 
     with tempfile.TemporaryDirectory(prefix="isobox-slirp-acceptance-") as temp:
         root = pathlib.Path(temp)
         path_dir = root / "bin"
         path_dir.mkdir()
         (path_dir / "bwrap").symlink_to(bwrap)
-        (path_dir / "slirp4netns").symlink_to(slirp)
+        if args.backend == "pasta":
+            (path_dir / "pasta").symlink_to(pasta)
+        elif args.backend == "slirp":
+            (path_dir / "slirp4netns").symlink_to(slirp)
+        else:
+            if pasta:
+                if args.simulate_pasta_failure:
+                    wrapper = path_dir / "pasta"
+                    wrapper.write_text(
+                        "#!/bin/sh\n"
+                        "for arg in \"$@\"; do\n"
+                        "  if [ \"$arg\" = \"--help\" ]; then\n"
+                        f"    exec {shlex.quote(pasta)} \"$@\"\n"
+                        "  fi\n"
+                        "done\n"
+                        "echo 'injected pasta startup failure' >&2\n"
+                        "exit 1\n",
+                        encoding="utf-8",
+                    )
+                    wrapper.chmod(0o700)
+                else:
+                    (path_dir / "pasta").symlink_to(pasta)
+            if slirp:
+                (path_dir / "slirp4netns").symlink_to(slirp)
         environment = create_environment(root, path_dir)
 
-        test_off_egress(binary, environment, root / "off")
-        test_off_ports_fail_closed(binary, environment, root / "off-ports")
-        test_direct_forwards(binary, environment, root / "forwards")
-        if not args.local_only:
-            test_direct_external(binary, environment, root / "default-dns")
-            test_direct_external(binary, environment, root / "profile-dns", dns="1.1.1.1")
+        if args.dns_only:
+            test_direct_external(
+                binary,
+                environment,
+                root / "default-dns",
+                backend=args.backend,
+                expect_fallback=args.simulate_pasta_failure,
+            )
+            test_direct_external(
+                binary,
+                environment,
+                root / "profile-dns",
+                dns="1.1.1.1",
+                backend=args.backend,
+                expect_fallback=args.simulate_pasta_failure,
+            )
             if has_host_ipv6_default_route():
                 test_direct_ipv6(binary, environment, root / "ipv6")
             else:
                 print("SKIP external IPv6: host has no IPv6 default route")
-        print("slirp direct acceptance completed")
+        else:
+            if args.backend == "slirp":
+                test_off_egress(binary, environment, root / "off")
+                test_off_ports_fail_closed(binary, environment, root / "off-ports")
+            test_direct_forwards(
+                binary,
+                environment,
+                root / "forwards",
+                expect_fallback=args.simulate_pasta_failure,
+            )
+            test_direct_single_protocol(binary, environment, root / "tcp-only", "tcp")
+            test_direct_single_protocol(binary, environment, root / "udp-only", "udp")
+            if not args.local_only:
+                test_direct_external(
+                    binary,
+                    environment,
+                    root / "default-dns",
+                    backend=args.backend,
+                    expect_fallback=args.simulate_pasta_failure,
+                )
+                test_direct_external(
+                    binary,
+                    environment,
+                    root / "profile-dns",
+                    dns="1.1.1.1",
+                    backend=args.backend,
+                    expect_fallback=args.simulate_pasta_failure,
+                )
+                if has_host_ipv6_default_route():
+                    test_direct_ipv6(binary, environment, root / "ipv6")
+                else:
+                    print("SKIP external IPv6: host has no IPv6 default route")
+        print(f"{args.backend} direct acceptance completed")
 
 
 if __name__ == "__main__":

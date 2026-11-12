@@ -57,6 +57,13 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 	if command == nil {
 		return 0, fmt.Errorf("bwrap command is required")
 	}
+	if network != nil && network.FallbackReason != "" {
+		writer := command.Stderr
+		if writer == nil {
+			writer = os.Stderr
+		}
+		_, _ = fmt.Fprintf(writer, "isobox: %s\n", network.FallbackReason)
+	}
 	if network != nil && network.activeBackend() == "none" {
 		return 0, fmt.Errorf("network supervisor requires a selected backend")
 	}
@@ -144,13 +151,9 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 			if status.ChildPID > 0 {
 				childPID = status.ChildPID
 				if network != nil && forwarder == nil {
-					forwarder, err = startNetworkBackend(*network, childPID, rules, command.Stdout, command.Stderr)
-					if err == nil {
+					forwarder, err = setupNetworkBackendWithFallback(network, childPID, rules, command.Stdout, command.Stderr, startNetworkBackend)
+					if err == nil && forwarder != nil {
 						forwarderDone = forwarder.doneChannel()
-						err = forwarder.waitReady()
-						if err == nil {
-							err = forwarder.configureForwards(rules)
-						}
 					}
 				}
 				if !gateReleased && needsGate {
@@ -242,6 +245,63 @@ func startNetworkBackend(network NetworkRuntime, namespacePID int, rules []profi
 	default:
 		return nil, fmt.Errorf("unsupported network backend %q", network.activeBackend())
 	}
+}
+
+type networkBackendStarter func(NetworkRuntime, int, []profile.PortRule, io.Writer, io.Writer) (managedNetworkProcess, error)
+
+func setupNetworkBackendWithFallback(
+	network *NetworkRuntime,
+	namespacePID int,
+	rules []profile.PortRule,
+	stdout, stderr io.Writer,
+	start networkBackendStarter,
+) (managedNetworkProcess, error) {
+	primary := *network
+	process, primaryErr := startAndPrepareNetworkBackend(primary, namespacePID, rules, stdout, stderr, start)
+	if primaryErr == nil {
+		return process, nil
+	}
+	if primary.Fallback == nil {
+		return nil, fmt.Errorf("%s setup failed: %w", primary.activeBackend(), primaryErr)
+	}
+
+	fallback := *primary.Fallback
+	fallback.Fallback = nil
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	_, _ = fmt.Fprintf(stderr, "isobox: %s setup failed; trying compatible %s fallback: %v\n",
+		primary.activeBackend(), fallback.activeBackend(), primaryErr)
+	fallbackProcess, fallbackErr := startAndPrepareNetworkBackend(fallback, namespacePID, rules, stdout, stderr, start)
+	if fallbackErr != nil {
+		return nil, fmt.Errorf("%s setup failed: %v; compatible %s fallback failed: %w",
+			primary.activeBackend(), primaryErr, fallback.activeBackend(), fallbackErr)
+	}
+	*network = fallback
+	return fallbackProcess, nil
+}
+
+func startAndPrepareNetworkBackend(
+	network NetworkRuntime,
+	namespacePID int,
+	rules []profile.PortRule,
+	stdout, stderr io.Writer,
+	start networkBackendStarter,
+) (managedNetworkProcess, error) {
+	process, err := start(network, namespacePID, rules, stdout, stderr)
+	if err == nil && process == nil {
+		return nil, fmt.Errorf("%s startup returned no network process", network.activeBackend())
+	}
+	if err == nil {
+		err = process.waitReady()
+	}
+	if err == nil {
+		err = process.configureForwards(rules)
+	}
+	if err != nil && process != nil {
+		process.stop()
+	}
+	return process, err
 }
 
 func closeExtraFiles(files []*os.File) {

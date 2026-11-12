@@ -13,12 +13,15 @@ import (
 // NetworkRuntime is the selected backend and the launch data shared by the
 // bubblewrap builder and network-process supervisor.
 type NetworkRuntime struct {
-	Mode          profile.NetworkMode
-	Backend       preflight.BackendKind
-	PortForwarder preflight.BackendKind
-	Executable    string
-	Resolver      []byte
-	PastaDNSArgs  []string
+	Mode           profile.NetworkMode
+	Backend        preflight.BackendKind
+	PortForwarder  preflight.BackendKind
+	Executable     string
+	Resolver       []byte
+	PastaDNSArgs   []string
+	FallbackReason string
+	// Fallback is a prevalidated direct backend attempted before bwrap's gate opens.
+	Fallback *NetworkRuntime
 }
 
 func (runtime NetworkRuntime) activeBackend() preflight.BackendKind {
@@ -32,9 +35,10 @@ func (runtime NetworkRuntime) activeBackend() preflight.BackendKind {
 // resolver configuration used by bwrap and the network backend.
 func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath string) (NetworkRuntime, error) {
 	runtime := NetworkRuntime{
-		Mode:          selection.Mode,
-		Backend:       selection.Network,
-		PortForwarder: selection.PortForwarder,
+		Mode:           selection.Mode,
+		Backend:        selection.Network,
+		PortForwarder:  selection.PortForwarder,
+		FallbackReason: selection.FallbackReason,
 	}
 	backend := runtime.activeBackend()
 	switch backend {
@@ -62,7 +66,82 @@ func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath s
 	}
 	runtime.Resolver = []byte(resolver)
 	runtime.PastaDNSArgs = pastaArgs
+	if selection.FallbackNetwork != "" && selection.FallbackNetwork != preflight.BackendNone {
+		fallback := NetworkRuntime{
+			Mode:          selection.Mode,
+			Backend:       selection.FallbackNetwork,
+			PortForwarder: selection.FallbackNetwork,
+		}
+		switch selection.FallbackNetwork {
+		case preflight.BackendPasta:
+			fallback.Executable = pastaPath
+		case preflight.BackendSlirp4netns:
+			fallback.Executable = slirpPath
+		default:
+			return NetworkRuntime{}, fmt.Errorf("unsupported fallback network backend %q", selection.FallbackNetwork)
+		}
+		if fallback.Executable == "" {
+			return NetworkRuntime{}, fmt.Errorf("selected fallback network backend %q has no executable", selection.FallbackNetwork)
+		}
+		fallbackResolver, _, err := directResolver(selection, fallback.activeBackend())
+		if err != nil {
+			return NetworkRuntime{}, err
+		}
+		fallback.Resolver = []byte(fallbackResolver)
+		runtime.Resolver = combineResolverConfigs(runtime.Resolver, fallback.Resolver)
+		runtime.Fallback = &fallback
+	}
 	return runtime, nil
+}
+
+func combineResolverConfigs(primary, fallback []byte) []byte {
+	primaryServers := resolverNameservers(primary)
+	fallbackServers := resolverNameservers(fallback)
+	seen := make(map[string]struct{}, len(primaryServers)+len(fallbackServers))
+	servers := make([]string, 0, 3)
+	fallbackAdded := false
+	for _, address := range primaryServers {
+		if _, exists := seen[address]; exists {
+			continue
+		}
+		seen[address] = struct{}{}
+		servers = append(servers, address)
+	}
+	for _, address := range fallbackServers {
+		if _, exists := seen[address]; exists {
+			continue
+		}
+		if len(servers) == 3 {
+			servers = servers[:2]
+		}
+		seen[address] = struct{}{}
+		servers = append(servers, address)
+		fallbackAdded = true
+	}
+	if !fallbackAdded {
+		return primary
+	}
+	var config strings.Builder
+	for _, address := range servers {
+		config.WriteString("nameserver ")
+		config.WriteString(address)
+		config.WriteByte('\n')
+	}
+	if len(servers) > 1 {
+		config.WriteString("options timeout:1 attempts:1\n")
+	}
+	return []byte(config.String())
+}
+
+func resolverNameservers(config []byte) []string {
+	var addresses []string
+	for _, line := range strings.Split(string(config), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "nameserver" {
+			addresses = append(addresses, fields[1])
+		}
+	}
+	return addresses
 }
 
 func directResolver(selection preflight.BackendSelection, backend preflight.BackendKind) (string, []string, error) {
