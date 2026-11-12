@@ -23,3 +23,19 @@ probes.
 
 It uses only Python's standard library and writes profiles, settings, HOME
 directories, and runtime state under a temporary directory.
+
+## pasta off-mode host-forward acceptance
+
+`pasta_off_acceptance.py` exercises `off` mode with one declared TCP+UDP
+host port. It checks that the sandbox cannot reach a host listener or public
+TCP/UDP DNS endpoint, that host TCP/UDP requests reach the declared app port
+and receive replies, and that an unannounced guest TCP listener stays closed.
+
+```sh
+python3 ROADMAP/F05-network/source/pasta_off_acceptance.py /tmp/isobox-live
+```
+
+Run it as the ordinary isobox user on a host that permits rootless bwrap,
+pasta namespace setup, and nftables inside the new network namespace. A failure
+before the app reports `READY` is not a networking acceptance pass; inspect
+the printed fail-closed error and host restrictions.

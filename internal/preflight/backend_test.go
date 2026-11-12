@@ -31,7 +31,7 @@ func TestSelectBackend(t *testing.T) {
 			config: directTestProfile(nil),
 			capabilities: Capabilities{
 				Pasta:              "/usr/bin/pasta",
-				PastaOptions:       testOptionSet("--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns", "--foreground", "--pid", "--dns-forward", "--dns-host"),
+				PastaOptions:       testOptionSet("--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns", "--quiet", "--foreground", "--pid", "--dns-forward", "--dns-host"),
 				Slirp4netns:        "/usr/bin/slirp4netns",
 				Slirp4netnsOptions: testOptionSet("--configure", "--enable-ipv6", "--ready-fd", "--exit-fd"),
 			},
@@ -72,12 +72,44 @@ func TestSelectBackend(t *testing.T) {
 				Pasta: "/usr/bin/pasta",
 				PastaOptions: testOptionSet(
 					"--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns", "--no-splice",
-					"--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra", "--foreground",
+					"--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra", "--quiet", "--foreground", "--pid",
 				),
 			},
 			wantNetwork:   BackendNone,
 			wantForwarder: BackendPasta,
 			wantFilter:    true,
+		},
+		{
+			name: "off TCP-only requires UDP handler disabled",
+			config: offTestProfile([]profile.PortRule{{
+				HostAddress: "127.0.0.1", Port: 8123, Protocol: profile.PortProtocolTCP,
+			}}),
+			capabilities: Capabilities{
+				Pasta: "/usr/bin/pasta",
+				PastaOptions: testOptionSet(
+					"--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns",
+					"--no-splice", "--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra", "--pid",
+					"--quiet", "--foreground", "--no-udp",
+				),
+			},
+			wantNetwork:   BackendNone,
+			wantForwarder: BackendPasta,
+			wantFilter:    true,
+		},
+		{
+			name: "off TCP-only refuses missing UDP handler toggle",
+			config: offTestProfile([]profile.PortRule{{
+				HostAddress: "127.0.0.1", Port: 8123, Protocol: profile.PortProtocolTCP,
+			}}),
+			capabilities: Capabilities{
+				Pasta: "/usr/bin/pasta",
+				PastaOptions: testOptionSet(
+					"--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns",
+					"--no-splice", "--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra", "--pid",
+					"--quiet", "--foreground",
+				),
+			},
+			wantErr: "lacks options required to enforce off-mode egress",
 		},
 		{
 			name: "off refuses incomplete pasta",
@@ -86,6 +118,20 @@ func TestSelectBackend(t *testing.T) {
 			}}),
 			capabilities: Capabilities{Pasta: "/usr/bin/pasta", PastaOptions: testOptionSet("--tcp-ports")},
 			wantErr:      "lacks options required to enforce off-mode egress",
+		},
+		{
+			name: "off requires pasta PID readiness signal",
+			config: offTestProfile([]profile.PortRule{{
+				HostAddress: "127.0.0.1", Port: 8123, Protocol: profile.PortProtocolBoth,
+			}}),
+			capabilities: Capabilities{
+				Pasta: "/usr/bin/pasta",
+				PastaOptions: testOptionSet(
+					"--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns", "--no-splice",
+					"--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra", "--quiet", "--foreground",
+				),
+			},
+			wantErr: "lacks options required to enforce off-mode egress",
 		},
 	}
 

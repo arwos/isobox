@@ -5,12 +5,42 @@ package sandbox
 import (
 	"encoding/binary"
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/arwos/isobox/internal/profile"
 )
+
+func TestPastaPIDFileReadyRequiresMatchingPID(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "ready.pid")
+	process := &pastaProcess{
+		command: &exec.Cmd{Process: &os.Process{Pid: 1234}},
+		pidFile: pidFile,
+	}
+
+	if err := os.WriteFile(pidFile, []byte("1234\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !process.pidFileReady() {
+		t.Fatal("pidFileReady() = false, want a matching PID")
+	}
+	if err := os.WriteFile(pidFile, []byte("4321\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if process.pidFileReady() {
+		t.Fatal("pidFileReady() = true, want false for a different PID")
+	}
+	if err := os.WriteFile(pidFile, []byte("not a PID\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if process.pidFileReady() {
+		t.Fatal("pidFileReady() = true, want false for malformed content")
+	}
+}
 
 func TestPortForwardSpecs(t *testing.T) {
 	rules := []profile.PortRule{

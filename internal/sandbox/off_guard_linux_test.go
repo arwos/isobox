@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/arwos/isobox/internal/profile"
 )
 
 func TestParsePortSet(t *testing.T) {
@@ -65,5 +67,31 @@ func TestInstallOffFilterReturnsNftFailure(t *testing.T) {
 	err = installOffFilter(nftPath, []string{"80"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "nft -f - failed") {
 		t.Fatalf("installOffFilter() error = %v, want fail-closed nft error", err)
+	}
+}
+
+func TestFirewallPortSetsUseOnlyNumericPorts(t *testing.T) {
+	tcp, udp, err := firewallPortSets([]profile.PortRule{
+		{HostAddress: "127.0.0.1", Port: 8100, EndPort: 8102, Protocol: profile.PortProtocolTCP},
+		{HostAddress: "::1", Port: 5353, Protocol: profile.PortProtocolUDP},
+		{HostAddress: "192.0.2.1", Port: 9000, Protocol: profile.PortProtocolBoth},
+	})
+	if err != nil {
+		t.Fatalf("firewallPortSets() error = %v", err)
+	}
+	if tcp != "8100-8102,9000" || udp != "5353,9000" {
+		t.Fatalf("firewallPortSets() = (%q, %q), want numeric protocol-specific ranges", tcp, udp)
+	}
+}
+
+func TestFirewallPortSetsRejectInvalidValues(t *testing.T) {
+	for _, rule := range []profile.PortRule{
+		{Port: 0, Protocol: profile.PortProtocolTCP},
+		{Port: 100, EndPort: 99, Protocol: profile.PortProtocolTCP},
+		{Port: 100, Protocol: "icmp"},
+	} {
+		if _, _, err := firewallPortSets([]profile.PortRule{rule}); err == nil {
+			t.Fatalf("firewallPortSets(%#v) succeeded, want an error", rule)
+		}
 	}
 }

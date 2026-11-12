@@ -63,13 +63,22 @@ func startPasta(pastaPath string, namespacePID int, rules []profile.PortRule, mo
 		udpSpec = "none"
 	}
 
+	tempDir, err := os.MkdirTemp("", "isobox-pasta-")
+	if err != nil {
+		return nil, fmt.Errorf("create pasta readiness directory: %w", err)
+	}
+	process := &pastaProcess{
+		expected: expected,
+		tempDir:  tempDir,
+		pidFile:  filepath.Join(tempDir, "ready.pid"),
+	}
 	args := []string{
 		"--foreground", "--quiet",
+		"--pid", process.pidFile,
 		"--config-net",
 		"--tcp-ns=none", "--udp-ns=none",
 		"--tcp-ports=" + tcpSpec, "--udp-ports=" + udpSpec,
 	}
-	process := &pastaProcess{expected: expected}
 	if offMode {
 		args = append(args, "--no-splice", "--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra")
 		if !hasTCP {
@@ -79,14 +88,7 @@ func startPasta(pastaPath string, namespacePID int, rules []profile.PortRule, mo
 			args = append(args, "--no-udp")
 		}
 	} else {
-		tempDir, err := os.MkdirTemp("", "isobox-pasta-")
-		if err != nil {
-			return nil, fmt.Errorf("create pasta readiness directory: %w", err)
-		}
-		process.tempDir = tempDir
-		process.pidFile = filepath.Join(tempDir, "ready.pid")
 		args = append(args, dnsArgs...)
-		args = append(args, "--pid", process.pidFile)
 	}
 	args = append(args, strconv.Itoa(namespacePID))
 	command := exec.Command(pastaPath, args...)
@@ -141,25 +143,17 @@ func (process *pastaProcess) waitReady() error {
 	defer deadline.Stop()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
-	var lastErr error
 	for {
-		ready, err := process.ownsForwardedSockets()
-		if ready && process.pidFile != "" {
-			ready = process.pidFileReady()
-		}
-		if len(process.expected) == 0 && process.pidFile == "" {
-			ready = false
-		}
-		if err == nil && ready {
-			select {
-			case <-process.done:
-				return fmt.Errorf("pasta exited during startup: %w", process.waitErr)
-			default:
-				return nil
+		if process.pidFileReady() {
+			ready, inspectErr := process.ownsForwardedSockets()
+			if inspectErr != nil || ready {
+				select {
+				case <-process.done:
+					return fmt.Errorf("pasta exited during startup: %w", process.waitErr)
+				default:
+					return nil
+				}
 			}
-		}
-		if err != nil {
-			lastErr = err
 		}
 		select {
 		case <-process.done:
@@ -170,10 +164,7 @@ func (process *pastaProcess) waitReady() error {
 		case <-ticker.C:
 		case <-deadline.C:
 			missing := process.missingForwardedSockets()
-			if lastErr != nil {
-				return fmt.Errorf("pasta did not become ready within %s (missing: %s; inspect /proc/%d/net and /proc/%d/fd: %v)", forwarderReadyTimeout, missing, process.command.Process.Pid, process.command.Process.Pid, lastErr)
-			}
-			return fmt.Errorf("pasta did not become ready within %s (missing: %s)", forwarderReadyTimeout, missing)
+			return fmt.Errorf("pasta did not confirm all forwarded sockets within %s (missing: %s; PID file: %s)", forwarderReadyTimeout, missing, process.pidFile)
 		}
 	}
 }

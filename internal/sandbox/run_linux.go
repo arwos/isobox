@@ -223,7 +223,7 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 
 func terminateLaunch(command *exec.Cmd, childPID int) {
 	if childPID > 0 {
-		if groupID, err := syscall.Getpgid(childPID); err == nil && groupID > 0 {
+		if groupID, err := syscall.Getpgid(childPID); err == nil && shouldSignalProcessGroup(groupID, syscall.Getpgrp()) {
 			_ = syscall.Kill(-groupID, syscall.SIGKILL)
 		}
 		_ = syscall.Kill(childPID, syscall.SIGKILL)
@@ -271,12 +271,16 @@ func forwardSignal(pid int, received os.Signal) {
 	if !ok || pid <= 0 {
 		return
 	}
-	if groupID, err := syscall.Getpgid(pid); err == nil && groupID > 0 {
+	if groupID, err := syscall.Getpgid(pid); err == nil && shouldSignalProcessGroup(groupID, syscall.Getpgrp()) {
 		if err := syscall.Kill(-groupID, sig); err == nil {
 			return
 		}
 	}
 	_ = syscall.Kill(pid, sig)
+}
+
+func shouldSignalProcessGroup(groupID, supervisorGroupID int) bool {
+	return groupID > 0 && groupID != supervisorGroupID
 }
 
 func setStatusFD(args []string, fd int) error {

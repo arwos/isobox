@@ -164,7 +164,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		"--",
 	)
 	if offGuard {
-		tcpPorts, udpPorts, err := portForwardSpecs(config.Network.Ports)
+		tcpPorts, udpPorts, err := firewallPortSets(config.Network.Ports)
 		if err != nil {
 			return nil, err
 		}
@@ -255,6 +255,34 @@ func portForwardSpecs(rules []profile.PortRule) (string, string, error) {
 			tcp = append(tcp, forward)
 		case profile.PortProtocolUDP:
 			udp = append(udp, forward)
+		default:
+			return "", "", fmt.Errorf("profile.network.port[%d].protocol %q is invalid", index, rule.Protocol)
+		}
+	}
+	return strings.Join(tcp, ","), strings.Join(udp, ","), nil
+}
+
+// firewallPortSets returns only the numeric destination ports accepted by the
+// in-namespace nftables guard. pasta forwarding specs also include the host
+// bind address and cannot be parsed as nft port sets.
+func firewallPortSets(rules []profile.PortRule) (string, string, error) {
+	var tcp, udp []string
+	for index, rule := range rules {
+		if rule.Port == 0 || rule.Port > 65535 || rule.EndPort != 0 && (rule.EndPort < rule.Port || rule.EndPort > 65535) {
+			return "", "", fmt.Errorf("profile.network.port[%d] has invalid firewall port range", index)
+		}
+		portRange := strconv.Itoa(int(rule.Port))
+		if rule.EndPort != 0 {
+			portRange += "-" + strconv.Itoa(int(rule.EndPort))
+		}
+		switch rule.Protocol {
+		case profile.PortProtocolBoth:
+			tcp = append(tcp, portRange)
+			udp = append(udp, portRange)
+		case profile.PortProtocolTCP:
+			tcp = append(tcp, portRange)
+		case profile.PortProtocolUDP:
+			udp = append(udp, portRange)
 		default:
 			return "", "", fmt.Errorf("profile.network.port[%d].protocol %q is invalid", index, rule.Protocol)
 		}

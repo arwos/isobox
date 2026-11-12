@@ -54,4 +54,19 @@
 - `pasta --help` не содержит обязательных для `off`/`direct` опций `--config-net`, `--udp-ports`, `--tcp-ns` и `--udp-ns`. Проверочный `off` профиль с опубликованным port и установленным pasta завершился exit 2 с ошибкой `installed pasta lacks options required to enforce off-mode egress and explicit forwarding`; payload marker отсутствовал. Это подтверждает startup fail-closed, но не работу nft guard и ingress.
 - Реальный slirp API обмен и host forwarding проверены harness-ом; он успешно открыл диапазон отдельными TCP/UDP `add_hostfwd` правилами. Повторяемая инструкция: `ROADMAP/F05-network/source/README.md`.
 
-F05 остаётся частично непринятой: нужен host с совместимой pasta для off-mode egress guard/ingress и прямого backend comparison; нужен IPv6 default route для внешней IPv6 матрицы.
+F05 остаётся частично непринятой: F05-T01 требует хост, где nft может применять правила в rootless network namespace; F05-T02 требует runtime comparison с pasta и IPv6 default route. Актуальные результаты после исправления preflight и readiness записаны ниже.
+
+## Повторная проверка F05-T01 и regression acceptance
+
+Старые runtime записи выше описывают проверки до исправления обнаружения обрезанного pasta --help; актуальный результат указан здесь.
+
+Проверка выполнена 2026-11-13 после правок preflight, pasta readiness и off-mode port rules:
+
+- Установленный pasta возвращает `--help` длиной 4096 байт, где часть поддерживаемых flags обрезана. Preflight теперь дополнительно вызывает parser probes с каждым скрытым flag и `--help` последним; runtime проходит capability check и запускает pasta с проверенными explicit options.
+- Pasta `--pid` используется как startup readiness: по документации pasta пишет свой PID после завершения инициализации. isobox сверяет PID; если `/proc/<pid>/fd` и `/proc/<pid>/net` доступны, дополнительно подтверждает ownership всех ожидаемых forwarding sockets. Недоступность procfs не подменяет PID handshake.
+- `go test ./...` — прошло, включая тесты parser probes, протокольных отключателей `--no-tcp`/`--no-udp`, числовых nft port sets, PID readiness и защиты supervisor от сигнализации собственной process group.
+- `go build -o /tmp/isobox-f05-current ./cmd/isobox` — прошло. GVM сообщил, что его stat cache в `/home/user/.gvm/.cache` недоступен для записи; exit code сборки 0.
+- `python3 -c 'import ast, pathlib; ast.parse(pathlib.Path("ROADMAP/F05-network/source/pasta_off_acceptance.py").read_text(encoding="utf-8"))'` — прошло.
+- `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-f05-current` — прошло: `off` без ports блокирует host-loopback, внешний TCP/UDP и DNS; direct/slirp подтверждает DNS override, IPv4 TCP/UDP и явный host-forward диапазон. Внешний IPv6 пропущен, потому что host не имеет IPv6 default route.
+- `python3 ROADMAP/F05-network/source/pasta_off_acceptance.py /tmp/isobox-f05-current` — harness запустил pasta и дошёл до nft helper, но завершился до `READY`: `nft -f - failed: exit status 1 (netlink: Error: cache initialization failed: Operation not permitted)`. Payload не был запущен. Это подтверждает fail-closed при запрете netlink, но не подтверждает работу правил, host ingress или ответы на входящие TCP/UDP.
+- Сценарий успешной приёмки off+ports сохранён в `source/pasta_off_acceptance.py`; запускать его нужно на хосте, где nft разрешено изменять firewall внутри rootless network namespace. Пока эта проверка не проходит до payload, F05-T01 остаётся `[!]`.

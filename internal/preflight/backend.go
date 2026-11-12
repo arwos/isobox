@@ -58,10 +58,7 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 		if capabilities.PastaInspectionError != "" {
 			return BackendSelection{}, fmt.Errorf("cannot verify pasta's off-mode forwarding options: %s", capabilities.PastaInspectionError)
 		}
-		if !hasAllOptions(capabilities.PastaOptions,
-			"--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns",
-			"--no-splice", "--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra",
-			"--foreground") {
+		if !hasAllOptions(capabilities.PastaOptions, offPastaRequiredOptions(config.Network.Ports)...) {
 			return BackendSelection{}, fmt.Errorf("installed pasta lacks options required to enforce off-mode egress and explicit forwarding; update passt and retry")
 		}
 		if err := validateHostForwards(config.Network.Ports, false); err != nil {
@@ -89,7 +86,7 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 
 	pastaSupported := capabilities.Pasta != "" && capabilities.PastaInspectionError == "" && hasAllOptions(capabilities.PastaOptions,
 		"--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns",
-		"--foreground", "--pid", "--dns-forward", "--dns-host")
+		"--quiet", "--foreground", "--pid", "--dns-forward", "--dns-host")
 	if pastaSupported {
 		if err := validateHostForwards(config.Network.Ports, false); err != nil {
 			return BackendSelection{}, err
@@ -131,7 +128,7 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 		reasons = append(reasons, "pasta capabilities could not be inspected: "+capabilities.PastaInspectionError)
 	} else if !hasAllOptions(capabilities.PastaOptions,
 		"--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns",
-		"--foreground", "--pid", "--dns-forward", "--dns-host") {
+		"--quiet", "--foreground", "--pid", "--dns-forward", "--dns-host") {
 		reasons = append(reasons, "pasta lacks required network, lifecycle, or DNS-forwarding options")
 	}
 	if capabilities.Slirp4netns == "" {
@@ -144,6 +141,32 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 		reasons = append(reasons, "slirp4netns lacks the explicit host-forward API")
 	}
 	return BackendSelection{}, fmt.Errorf("no available network backend can preserve this direct profile: %s", strings.Join(reasons, "; "))
+}
+
+func offPastaRequiredOptions(rules []profile.PortRule) []string {
+	required := []string{
+		"--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns",
+		"--no-splice", "--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra", "--pid",
+		"--quiet", "--foreground",
+	}
+	hasTCP, hasUDP := false, false
+	for _, rule := range rules {
+		switch rule.Protocol {
+		case profile.PortProtocolTCP:
+			hasTCP = true
+		case profile.PortProtocolUDP:
+			hasUDP = true
+		default:
+			hasTCP, hasUDP = true, true
+		}
+	}
+	if !hasTCP {
+		required = append(required, "--no-tcp")
+	}
+	if !hasUDP {
+		required = append(required, "--no-udp")
+	}
+	return required
 }
 
 func hasAllOptions(available map[string]bool, required ...string) bool {

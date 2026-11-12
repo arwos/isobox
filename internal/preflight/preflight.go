@@ -33,6 +33,31 @@ type Capabilities struct {
 
 var longOptionPattern = regexp.MustCompile(`--[a-zA-Z0-9][a-zA-Z0-9-]*`)
 
+type optionProbe struct {
+	option string
+	args   []string
+}
+
+// Some pasta releases cap --help at 4096 bytes, hiding options that their
+// parser still supports. Probe options missing from help with --help last so
+// the parser validates the flag without starting a network process.
+var pastaOptionProbes = []optionProbe{
+	{option: "--config-net", args: []string{"--config-net"}},
+	{option: "--udp-ports", args: []string{"--udp-ports=none"}},
+	{option: "--tcp-ns", args: []string{"--tcp-ns=none"}},
+	{option: "--udp-ns", args: []string{"--udp-ns=none"}},
+	{option: "--no-splice", args: []string{"--no-splice"}},
+	{option: "--no-dhcp", args: []string{"--no-dhcp"}},
+	{option: "--no-dhcpv6", args: []string{"--no-dhcpv6"}},
+	{option: "--no-ndp", args: []string{"--no-ndp"}},
+	{option: "--no-ra", args: []string{"--no-ra"}},
+	{option: "--no-tcp", args: []string{"--no-tcp"}},
+	{option: "--no-udp", args: []string{"--no-udp"}},
+	{option: "--pid", args: []string{"--pid=/dev/null"}},
+	{option: "--dns-forward", args: []string{"--dns-forward=10.0.2.3"}},
+	{option: "--dns-host", args: []string{"--dns-host=127.0.0.1"}},
+}
+
 // Check verifies host prerequisites before any sandbox or application process
 // is started. It accumulates independent failures so one run can report the
 // full set of host changes the user needs to make.
@@ -65,7 +90,7 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 		issues = append(issues, "neither pasta nor slirp4netns was found in PATH; install passt (pasta) or slirp4netns and retry")
 	}
 	if capabilities.Pasta != "" {
-		capabilities.PastaOptions, capabilities.PastaInspectionError = inspectOptions(capabilities.Pasta)
+		capabilities.PastaOptions, capabilities.PastaInspectionError = inspectOptions(capabilities.Pasta, pastaOptionProbes...)
 	}
 	if capabilities.Slirp4netns != "" {
 		capabilities.Slirp4netnsOptions, capabilities.SlirpInspectionError = inspectOptions(capabilities.Slirp4netns)
@@ -142,7 +167,7 @@ func bubblewrapFailureAdvice(err error) string {
 	return message
 }
 
-func inspectOptions(path string) (map[string]bool, string) {
+func inspectOptions(path string, probes ...optionProbe) (map[string]bool, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, path, "--help").CombinedOutput()
@@ -155,6 +180,24 @@ func inspectOptions(path string) (map[string]bool, string) {
 	options := make(map[string]bool)
 	for _, option := range longOptionPattern.FindAllString(string(output), -1) {
 		options[option] = true
+	}
+	for _, probe := range probes {
+		if options[probe.option] {
+			continue
+		}
+		args := make([]string, 0, len(probe.args)+1)
+		args = append(args, probe.args...)
+		args = append(args, "--help")
+		probeOutput, probeErr := exec.CommandContext(ctx, path, args...).CombinedOutput()
+		if ctx.Err() != nil {
+			return nil, fmt.Sprintf("option probe for %s timed out after %s", probe.option, 3*time.Second)
+		}
+		if probeErr == nil {
+			options[probe.option] = true
+			for _, option := range longOptionPattern.FindAllString(string(probeOutput), -1) {
+				options[option] = true
+			}
+		}
 	}
 	if len(options) == 0 {
 		return nil, "--help returned no long options"

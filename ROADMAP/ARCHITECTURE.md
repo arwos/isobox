@@ -1,6 +1,6 @@
 # Архитектура и продуктовый план isobox
 
-Статус: roadmap согласован пользователем 2026-11-12. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация, host preflight, bwrap runtime, профильные mounts, изолированный HOME и ручные GUI grants. F05-T01 содержит off-mode egress guard и pasta host forwarding; F05-T02 содержит direct runtime на pasta/slirp и profile DNS/forwarding. Runtime acceptance F05 остаётся открытой. F07 содержит cgroup/rlimit backend с fail-closed startup gate; F07-T01 прошла live-приёмку на пользовательском systemd scope. F08 содержит пользовательские desktop launchers и layered XDG settings; live-приёмка F08-T01 прошла в пользовательской X11-сессии. Proxy runtime остаётся не реализованным.
+Статус: roadmap согласован пользователем 2026-11-12. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация, host preflight, bwrap runtime, профильные mounts, изолированный HOME и ручные GUI grants. F05 содержит режим `off` с fail-closed egress guard и опубликованными портами через pasta, а также `direct` на pasta/slirp с DNS и forwarding. `off` без портов и direct через slirp прошли live-проверки; host acceptance для nft ingress/ответов в `off` с портами и runtime comparison pasta/slirp остаются открыты. F07 содержит cgroup/rlimit backend с fail-closed startup gate; F07-T01 прошла live-приёмку на пользовательском systemd scope. F08 содержит пользовательские desktop launchers и layered XDG settings; live-приёмка F08-T01 прошла в пользовательской X11-сессии. Proxy runtime остаётся не реализованным.
 
 ## Назначение и границы
 
