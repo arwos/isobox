@@ -18,6 +18,10 @@
 - `gofmt -w internal/preflight/backend.go internal/preflight/preflight.go` — успешно.
 - `git diff --check` — без замечаний.
 - `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — exit 0; GVM вывел предупреждение о записи stat cache в read-only `/home/user/.gvm/.cache`.
+- `gofmt -w internal/preflight/preflight.go internal/preflight/preflight_test.go` — успешно.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./internal/preflight` — успешно; тесты проверяют action hint для NETLINK_ROUTE denial и прочих bwrap errors.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./...` — успешно.
+- `PATH=/tmp/isobox-f05-off.ec4iL8/bin /tmp/isobox-f05-off.ec4iL8/isobox run --profile=/tmp/isobox-f05-off.ec4iL8/profile.unic --app-id=f05-off -- /usr/bin/true` — exit 2 до payload; новая диагностика предлагает разрешить rootless bwrap loopback setup и указывает отдельно, что установленный pasta не поддерживает необходимые off-mode options.
 - В текущей среде `bwrap`, `pasta` и `slirp4netns` найдены через `PATH`; `/dev/net/tun` отсутствует.
 
 Не запускалось:

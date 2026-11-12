@@ -51,7 +51,7 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 	if err != nil {
 		issues = append(issues, "bwrap was not found in PATH; install bubblewrap for this distribution")
 	} else if err := checkBubblewrap(capabilities.Bubblewrap); err != nil {
-		issues = append(issues, fmt.Sprintf("bwrap is not usable: %v; reinstall or repair bubblewrap and retry", err))
+		issues = append(issues, fmt.Sprintf("bwrap is not usable: %v; %s", err, bubblewrapFailureAdvice(err)))
 	}
 
 	if err := probeUserNamespace(); err != nil {
@@ -132,6 +132,14 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 		return capabilities, fmt.Errorf("%s", message.String())
 	}
 	return capabilities, nil
+}
+
+func bubblewrapFailureAdvice(err error) string {
+	message := "verify the bubblewrap installation and version, then repair or update it"
+	if err != nil && strings.Contains(err.Error(), "NETLINK_ROUTE") {
+		return "allow rootless bwrap to configure loopback in its network namespace; check host/container policy that restricts NETLINK_ROUTE access"
+	}
+	return message
 }
 
 func inspectOptions(path string) (map[string]bool, string) {
