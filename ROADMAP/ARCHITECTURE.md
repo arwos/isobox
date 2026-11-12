@@ -1,6 +1,6 @@
 # Архитектура и продуктовый план isobox
 
-Статус: roadmap согласован пользователем 2026-11-12. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация, host preflight, bwrap runtime, профильные mounts, изолированный HOME и ручные GUI grants. F05-T01 содержит off-mode egress guard и pasta host forwarding; F05-T02 содержит direct runtime на pasta/slirp и profile DNS/forwarding. Runtime acceptance обеих задач ещё не выполнена, поэтому они остаются `[~]`. Proxy runtime, limits и desktop system integration ещё не реализованы.
+Статус: roadmap согласован пользователем 2026-11-12. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация, host preflight, bwrap runtime, профильные mounts, изолированный HOME и ручные GUI grants. F05-T01 содержит off-mode egress guard и pasta host forwarding; F05-T02 содержит direct runtime на pasta/slirp и profile DNS/forwarding. Runtime acceptance F05 и F07 остаётся открытой. F07 содержит cgroup/rlimit backend с fail-closed startup gate; F08 содержит пользовательские desktop launchers и layered XDG settings, runtime acceptance launcher ещё открыта. Proxy runtime остаётся не реализованным.
 
 ## Назначение и границы
 
@@ -58,7 +58,7 @@ internal/limits/        применение лимитов
 internal/integration/   необязательные desktop/system defaults
 ```
 
-`cmd/isobox/`, `internal/cli/`, `internal/profile/`, `internal/preflight/` и `internal/sandbox/` содержат CLI, схему документов, host capability checks и bwrap root. Для `off` с объявленными портами runtime удерживает приложение до pasta и устанавливает nftables default-drop guard. Для `direct` он выбирает pasta, допускает slirp при сохранении возможностей профиля, фиксирует DNS в read-only resolver file и открывает только объявленные host forwards. Runtime acceptance F05 остаётся открытой. Proxy/SOCKS5/TUN, limits и system integration остаются отдельными roadmap задачами.
+`cmd/isobox/`, `internal/cli/`, `internal/profile/`, `internal/preflight/`, `internal/sandbox/`, `internal/limits/` и `internal/integration/` содержат CLI, схемы документов, host capability checks, bwrap root, профильные limits и optional XDG integration. Для `off` с объявленными портами runtime удерживает приложение до pasta и устанавливает nftables default-drop guard. Для `direct` он выбирает pasta, допускает slirp при сохранении возможностей профиля, фиксирует DNS в read-only resolver file и открывает только объявленные host forwards. Runtime acceptance F05/F07/F08 остаётся открытой. Proxy/SOCKS5/TUN остаётся отдельной roadmap задачей.
 
 ## Зависимости и проверенные источники
 

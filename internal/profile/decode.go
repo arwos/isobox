@@ -12,7 +12,7 @@ import (
 
 const maxConfigSize = 1 << 20
 
-// EffectiveProfile combines profile permissions with user-wide settings.
+// EffectiveProfile combines profile permissions with merged settings defaults.
 // Network values are copied into explicit fields so runtime builders never
 // need to apply defaults themselves.
 type EffectiveProfile struct {
@@ -41,20 +41,44 @@ func DecodeProfile(data []byte) (Profile, error) {
 
 // DecodeSettings parses and validates global isobox settings.
 func DecodeSettings(data []byte) (Settings, error) {
+	return ApplySettingsOverride(DefaultSettings(), data)
+}
+
+// ApplySettingsOverride applies one partial settings document over an
+// existing settings layer. Fields omitted from the document keep their base
+// values, allowing user settings to override only selected system defaults.
+func ApplySettingsOverride(base Settings, data []byte) (Settings, error) {
 	if len(data) > maxConfigSize {
 		return Settings{}, fmt.Errorf("settings: file exceeds %d bytes", maxConfigSize)
 	}
-	if err := rejectUnknownFields(data, settingsType(), "settings"); err != nil {
+	if err := ValidateSettings(base); err != nil {
+		return Settings{}, fmt.Errorf("settings base: %w", err)
+	}
+	if err := rejectUnknownFields(data, settingsOverrideType(), "settings"); err != nil {
 		return Settings{}, err
 	}
-	settings := DefaultSettings()
-	if err := unic.Unmarshal(data, &settings); err != nil {
+	override := settingsOverride{
+		Defaults: settingsDefaultOverride{
+			NetworkMode: unsetNetworkMode,
+			DNS:         unsetDNS,
+		},
+	}
+	if err := unic.Unmarshal(data, &override); err != nil {
 		return Settings{}, fmt.Errorf("settings: %w", err)
 	}
-	if err := ValidateSettings(settings); err != nil {
+	if override.Version != SchemaVersion {
+		return Settings{}, fmt.Errorf("settings.version: unsupported version %d; use %d", override.Version, SchemaVersion)
+	}
+	if override.Defaults.NetworkMode != unsetNetworkMode {
+		base.Defaults.NetworkMode = override.Defaults.NetworkMode
+	}
+	if override.Defaults.DNS != unsetDNS {
+		base.Defaults.DNS = override.Defaults.DNS
+	}
+	if err := ValidateSettings(base); err != nil {
 		return Settings{}, err
 	}
-	return settings, nil
+	return base, nil
 }
 
 // ValidateProfile checks all profile-only invariants. It does not inspect the
@@ -169,7 +193,7 @@ func ResolveProfile(profile Profile, settings Settings) (EffectiveProfile, error
 
 func profileType() reflect.Type { return reflect.TypeOf(Profile{}) }
 
-func settingsType() reflect.Type { return reflect.TypeOf(Settings{}) }
+func settingsOverrideType() reflect.Type { return reflect.TypeOf(settingsOverride{}) }
 
 func validNetworkMode(mode NetworkMode, allowInherit bool) bool {
 	if allowInherit && mode == "" {

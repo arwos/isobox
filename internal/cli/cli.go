@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/arwos/isobox/internal/integration"
 	"github.com/arwos/isobox/internal/limits"
 	"github.com/arwos/isobox/internal/preflight"
 	"github.com/arwos/isobox/internal/profile"
@@ -18,8 +19,9 @@ const rootUsage = `Usage:
   isobox run --profile=PATH [--app-id=ID] -- APP [ARGS...]
 
 Commands:
-  run    Prepare an isolated application launch
-  help   Show this help
+  run          Prepare an isolated application launch
+  integration  Manage optional user desktop launchers
+  help         Show this help
 `
 
 const runUsage = `Usage:
@@ -53,6 +55,8 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "run":
 		return executeRun(args[1:], stdout, stderr)
+	case "integration":
+		return executeIntegration(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "isobox: unknown command %q\n\n%s", args[0], rootUsage)
 		return 2
@@ -79,7 +83,12 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
 	}
-	effectiveProfile, err := profile.ResolveProfile(appProfile, profile.DefaultSettings())
+	settings, err := integration.LoadSettings()
+	if err != nil {
+		fmt.Fprintf(stderr, "isobox run: cannot load settings: %v\n", err)
+		return 2
+	}
+	effectiveProfile, err := profile.ResolveProfile(appProfile, settings)
 	if err != nil {
 		fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2

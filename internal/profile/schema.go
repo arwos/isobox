@@ -81,11 +81,29 @@ type ResourceLimits struct {
 	OpenFiles       uint64 `unic:"open_files,omitempty"`
 }
 
-// Settings contains global user defaults shared by profiles.
+// Settings contains global defaults shared by profiles after system/user merge.
 type Settings struct {
 	Version  int             `unic:"version,default=1"`
 	Defaults SettingsDefault `unic:"defaults"`
 }
+
+// settingsOverride represents only values explicitly provided in one settings
+// layer. Sentinel values keep absent settings distinguishable from empty
+// strings, while the version field retains its ordinary UNIC default.
+type settingsOverride struct {
+	Version  int                     `unic:"version,default=1"`
+	Defaults settingsDefaultOverride `unic:"defaults"`
+}
+
+type settingsDefaultOverride struct {
+	NetworkMode NetworkMode `unic:"network_mode"`
+	DNS         string      `unic:"dns"`
+}
+
+const (
+	unsetNetworkMode NetworkMode = "\x00isobox-unset"
+	unsetDNS                     = "\x00isobox-unset"
+)
 
 // SettingsDefault contains values profiles can override.
 type SettingsDefault struct {
