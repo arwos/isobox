@@ -102,4 +102,15 @@
 - Runtime-результат: `PASS sandbox process could not create an ICMP socket`; `PASS off mode blocked host/Internet TCP and external UDP/DNS`; `PASS host TCP/UDP requests reached the announced port and received replies`; `PASS host could not reach the unannounced guest TCP/UDP port`.
 - Ранние неуспешные прогоны выше остаются историей fail-closed поведения до изменения порядка создания namespace; они не описывают текущий результат.
 
-F05-T01 принята. F05-T02 остаётся `[!]` только из-за непроверенного внешнего IPv6: на host нет IPv6 default route.
+F05-T01 принята. F05-T02 остаётся `[!]`: внешний IPv6 недоступен из-за отсутствия default route, а IPv6 host-bind acceptance не прошла до запуска приложения.
+
+## F05-T02: IPv6 host-bind probe
+
+Acceptance harness теперь проверяет объявленный `::1` TCP+UDP bind через pasta, если host routes позволяют pasta выбрать IPv6 interface. slirp-прогон явно сообщает, что IPv6 host bind не поддержан его IPv4-only host-forward API.
+
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build -o /tmp/isobox-f05-ipv6 ./cmd/isobox` — прошло; GVM сообщил, что stat cache в `/home/user/.gvm/.cache` недоступен для записи.
+- Python `ast.parse` для финальной `source/slirp_acceptance.py`, проверка route predicates (`default route=False`, `routed interface=False`) и `git diff --check` — прошли.
+- Host Python смог создать TCP sockets на `::1` и `::`; `/proc/net/ipv6_route` содержит link-local routes на `tun0` и `wlp3s0`, но не IPv6 default route. Pasta manual описывает автоматический выбор единственного routed interface при отсутствии default route; у этого host несколько таких interface, поэтому harness считает IPv6 network setup недоступным.
+- Первый запуск `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-f05-ipv6 --backend pasta --local-only` прошёл IPv4 range и TCP/UDP single-port проверки, затем IPv6 bind probe завершился до `READY`: pasta вернула `Failed to bind port ... for option '-t ::1/...'`; приложение не запустилось. Этот результат не считается IPv6 forwarding pass.
+- Повторные локальные acceptance прогоны остановились раньше отдельных protocol checks: pasta вернула `Couldn't switch to pasta namespaces: Operation not permitted`, а при auto fallback slirp вернул `setns(CLONE_NEWNET): Operation not permitted`. Payload остался за startup gate.
+- Внешний IPv6 также остаётся непроверенным: default route отсутствует, отдельная попытка connect завершилась `Network is unreachable`. F05-T02 остаётся `[!]`; для закрытия нужны host routes, позволяющие pasta поднять IPv6, успешный `::1` TCP/UDP host bind и внешние IPv6 DNS/TCP/UDP пробы.
