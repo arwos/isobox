@@ -18,4 +18,11 @@
 - `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — прошло; GVM вывел предупреждение о недоступном stat cache в `/home/user/.gvm/.cache`, на сборку это не повлияло.
 - `git diff --check` — прошло.
 - Проверка `pasta --help` подтвердила DNS и PID options, но не показала все explicit network/forwarding options, которые требует preflight; такой pasta не будет выбран. `slirp4netns --help` показывает configure, IPv6, readiness, exit и API socket options.
-- Runtime-сценарии выше не выполнялись. Для T01 ingress и egress-фильтр, а для T02 direct TCP/UDP/DNS и pasta/slirp forwarding остаются не подтверждены; обе задачи оставлены `[~]`.
+- Для T01 ingress и egress-фильтр, а для T02 direct TCP/UDP/DNS и pasta/slirp forwarding остаются не подтверждены.
+
+Дополнительная runtime-попытка T02:
+
+- Установлены `bwrap 0.12.0` и `slirp4netns 1.2.1`; тестовый `PATH` содержал bwrap и slirp4netns, но не pasta, чтобы выбрать slirp fallback. Профиль использовал `mode direct`, явный DNS `192.0.2.53`, временный HOME и команду `/usr/bin/true`.
+- `PATH=/tmp/isobox-t02-bin /tmp/isobox run --profile=/tmp/isobox-t02-profile.unic --app-id=t02 -- /usr/bin/true` — приложение не запущено. Host preflight отклонил bwrap: `loopback: Failed to create NETLINK_ROUTE socket: Operation not permitted`.
+- Независимая проверка `unshare --user --map-root-user --net nft list tables` также не смогла открыть netlink (`Unable to initialize Netlink socket: Operation not permitted`). Создание user namespace само по себе проходит.
+- Результат не проверяет slirp readiness, DNS или forwarding: bwrap не смог создать пригодную сеть раньше запуска payload. Необходимо повторить live acceptance на хосте, где rootless bwrap разрешено настраивать loopback и маршруты. Fail-closed поведение подтверждено: команда приложения не стартовала.
