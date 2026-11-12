@@ -5,7 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
+
+	"github.com/arwos/isobox/internal/profile"
 )
 
 const rootUsage = `Usage:
@@ -63,9 +66,24 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "isobox run: %v\n\n%s", err, runUsage)
 		return 2
 	}
+	profileData, err := os.ReadFile(options.ProfilePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "isobox run: cannot read profile %q: %v\n", options.ProfilePath, err)
+		return 2
+	}
+	appProfile, err := profile.DecodeProfile(profileData)
+	if err != nil {
+		fmt.Fprintf(stderr, "isobox run: %v\n", err)
+		return 2
+	}
+	if _, err = profile.ResolveProfile(appProfile, profile.DefaultSettings()); err != nil {
+		fmt.Fprintf(stderr, "isobox run: %v\n", err)
+		return 2
+	}
 
 	// Never run the requested program directly. The sandbox runtime is added by
-	// later roadmap tasks, so this bootstrap command fails closed for now.
+	// later roadmap tasks, so this command only checks the profile and fails
+	// closed until the sandbox runtime is available.
 	fmt.Fprintf(stderr, "isobox: sandbox runtime is not available yet; refusing to launch %q outside isolation\n", options.Command[0])
 	return 2
 }

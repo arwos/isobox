@@ -1,0 +1,4 @@
+go.osspkg.com/bb v1.0.1 h1:AWyt2WUyHcyxbkAbiKHo69IPbm4Cvt9fWAcU0rpyRAs=
+go.osspkg.com/bb v1.0.1/go.mod h1:bh7v2dIXJC0ge8BZLsh10EFRbJSLjXCmxq4IwSogc58=
+go.osspkg.com/unic v1.0.2 h1:SZPNtglJHTZEjgq4tCFFZWPG4zz7NAbcCZOt4rzIHI8=
+go.osspkg.com/unic v1.0.2/go.mod h1:Erx2ezJPM/jcXQyxkcTexkcgB0rO4vtw4YORb8OpgBA=

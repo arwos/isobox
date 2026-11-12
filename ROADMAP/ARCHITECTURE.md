@@ -1,6 +1,6 @@
 # Архитектура и продуктовый план isobox
 
-Статус: roadmap согласован пользователем 2026-11-12. На момент утверждения репозиторий содержал только `go.mod`; сейчас добавлены CLI-каркас и типы профиля. Sandbox/network runtime и UNIC decode пока не реализованы.
+Статус: roadmap согласован пользователем 2026-11-12. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация и построение эффективных настроек. Sandbox/network runtime пока не реализованы.
 
 ## Назначение и границы
 
@@ -70,7 +70,7 @@ internal/integration/   необязательные desktop/system defaults
 - [RFC 1929](https://www.rfc-editor.org/rfc/rfc1929): SOCKS5 username/password передаёт пароль открыто.
 - [sing-box SOCKS inbound](https://sing-box.sagernet.org/configuration/inbound/socks/): выбран только как тестовый SOCKS-сервер в Podman; не runtime-зависимость isobox.
 - [systemd resource-control](https://freedesktop.org/software/systemd/man/latest/systemd.resource-control.html) и [systemd.exec](https://freedesktop.org/software/systemd/man/latest/systemd.exec): документируют cgroup-лимиты CPU/памяти/tasks и rlimit-параметры. Это кандидаты для исследования, но механизм isobox пока не выбран.
-- [go-unic repository](https://github.com/osspkg/go-unic): официальный источник не удалось получить из доступной сети (cache miss). До реализации использовать локальную инструкцию `/home/user/.agents/skills/osspkg/osspkg-lib-unic-usage/SKILL.md`, перепроверить API и не придумывать отсутствующие детали.
+- [go-unic repository](https://github.com/osspkg/go-unic): используется `go.osspkg.com/unic v1.0.2`; проверка исходников показала, что decoder пропускает неизвестные поля структуры, поэтому isobox выполняет отдельную проверку полей по схеме до `unic.Unmarshal`.
 
 ## Порядок зависимостей
 

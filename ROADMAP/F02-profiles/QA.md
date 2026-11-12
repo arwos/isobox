@@ -11,11 +11,13 @@
 
 Проверено:
 
-- `gofmt -w internal/profile/schema.go` — успешно.
-- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — exit 0; GVM вывел предупреждение о недоступном stat cache в read-only `/home/user/.gvm/.cache`.
+- `gofmt -w internal/profile/strict_unic.go internal/profile/decode.go internal/cli/cli.go` — успешно.
 - `git diff --check` — без замечаний.
+- `go build ./...` — exit 0; GVM вывел предупреждение о недоступном stat cache в read-only `/home/user/.gvm/.cache`.
+- Проверены исходники go-unic v1.0.2: неизвестные поля struct пропускаются, повторные одиночные поля дают ошибку, повторные slice fields собираются decoder в slice.
 
 Не запускалось:
 
-- UNIC decode/round-trip для значений по умолчанию и nested blocks; это проверяется задачей F02-T02 после добавления parser.
-- Тесты не добавлялись и не запускались.
+- Тесты и сценарии decode/round-trip не добавлялись и не запускались.
+
+Статические проверки компиляции не подтверждают runtime поведение файловых mounts, сети или proxy.
