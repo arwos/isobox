@@ -1,6 +1,6 @@
 # Архитектура и продуктовый план isobox
 
-Статус: roadmap согласован пользователем 2026-11-12. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация, host preflight, bwrap runtime, профильные mounts, изолированный HOME и ручные GUI grants. F05-T01 содержит off-mode egress guard и pasta host forwarding; F05-T02 содержит direct runtime на pasta/slirp и profile DNS/forwarding. Runtime acceptance F05 остаётся открытой. F07 содержит cgroup/rlimit backend с fail-closed startup gate; F07-T01 прошла live-приёмку на пользовательском systemd scope. F08 содержит пользовательские desktop launchers и layered XDG settings, runtime acceptance launcher ещё открыта. Proxy runtime остаётся не реализованным.
+Статус: roadmap согласован пользователем 2026-11-12. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация, host preflight, bwrap runtime, профильные mounts, изолированный HOME и ручные GUI grants. F05-T01 содержит off-mode egress guard и pasta host forwarding; F05-T02 содержит direct runtime на pasta/slirp и profile DNS/forwarding. Runtime acceptance F05 остаётся открытой. F07 содержит cgroup/rlimit backend с fail-closed startup gate; F07-T01 прошла live-приёмку на пользовательском systemd scope. F08 содержит пользовательские desktop launchers и layered XDG settings; live-приёмка F08-T01 прошла в пользовательской X11-сессии. Proxy runtime остаётся не реализованным.
 
 ## Назначение и границы
 
@@ -42,7 +42,7 @@ isobox run --profile=/path/to/profile.unic [--app-id=ID] -- app [args...]
 
 Профиль может задавать CPU, память, число процессов и открытых файлов. CPU, память и процессы ограничиваются через cgroup v2 в пользовательском transient scope `systemd-run`; open files — через `RLIMIT_NOFILE`. Запуск остаётся заблокированным до проверки значений, а недоступный или ослабленный лимит останавливает запуск. `process_count` использует cgroup task limit и включает потоки; две служебные задачи bwrap резервируются сверх лимита приложения. Live-приёмка F07-T01 подтвердила значения контроллеров, исчерпание task-бюджета, open-file rlimit и cleanup scope.
 
-Необязательная системная интеграция может предоставить desktop launchers и дополнительные системные значения по умолчанию. Эти значения пользователь может переопределять; они не считаются принудительной административной политикой.
+Необязательная системная интеграция может предоставить desktop launchers и дополнительные системные значения по умолчанию. Эти значения пользователь может переопределять; они не считаются принудительной административной политикой. F08-T01 прошла live-приёмку: desktop entry запущен из графической сессии, а XDG overrides проверены через обычный CLI запуск.
 
 ## Предлагаемая структура Go-кода
 
@@ -58,7 +58,7 @@ internal/limits/        применение лимитов
 internal/integration/   необязательные desktop/system defaults
 ```
 
-`cmd/isobox/`, `internal/cli/`, `internal/profile/`, `internal/preflight/`, `internal/sandbox/`, `internal/limits/` и `internal/integration/` содержат CLI, схемы документов, host capability checks, bwrap root, профильные limits и optional XDG integration. Для `off` с объявленными портами runtime удерживает приложение до pasta и устанавливает nftables default-drop guard. Для `direct` он выбирает pasta, допускает slirp при сохранении возможностей профиля, фиксирует DNS в read-only resolver file и открывает только объявленные host forwards. Runtime acceptance F05/F08 остаётся открытой; F07 пройдена. Proxy/SOCKS5/TUN остаётся отдельной roadmap задачей.
+`cmd/isobox/`, `internal/cli/`, `internal/profile/`, `internal/preflight/`, `internal/sandbox/`, `internal/limits/` и `internal/integration/` содержат CLI, схемы документов, host capability checks, bwrap root, профильные limits и optional XDG integration. Для `off` с объявленными портами runtime удерживает приложение до pasta и устанавливает nftables default-drop guard. Для `direct` он выбирает pasta, допускает slirp при сохранении возможностей профиля, фиксирует DNS в read-only resolver file и открывает только объявленные host forwards. Runtime acceptance F05 остаётся открытой; F07 и F08 пройдены. Proxy/SOCKS5/TUN остаётся отдельной roadmap задачей.
 
 ## Зависимости и проверенные источники
 

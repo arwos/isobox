@@ -1,20 +1,26 @@
 # F08 QA
 
-## Планируемые сценарии
+## Приёмочные сценарии
 
-- CLI работает на системе без desktop integration.
-- Сгенерированный launcher передаёт корректный profile, app-id и команду.
-- Пользовательское значение перекрывает системный default; изменение/удаление launcher не затрагивает профиль и данные приложения.
-- Установка и удаление интеграции не требуют привилегий root, если меняются только пользовательские файлы.
+- Обычный `isobox run` работает без установленных desktop launchers и settings.
+- Установленный launcher валиден, передаёт профиль, app-id и argv, а его удаление не затрагивает профиль/HOME.
+- Выбирается первый существующий системный XDG settings файл; пользовательские overrides применяются по полям и перекрывают системные defaults.
+- Install/update/remove работают только с пользовательскими файлами и не требуют root.
 
-## Выполнение
+## Выполнено
 
-- `gofmt -w internal/profile/schema.go internal/profile/decode.go internal/integration/settings.go internal/integration/desktop.go internal/integration/desktop_linux.go internal/integration/owner_linux.go internal/integration/desktop_other.go internal/cli/cli.go internal/cli/integration.go` — успешно.
-- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — успешно; Go вывел предупреждение о недоступном для записи GVM stat cache под `/home/user/.gvm`.
-- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./internal/integration` — успешно; покрыты install/update/remove, режим `0600`, защита неуправляемых файлов, порядок system/user/profile и отказ на неизвестном settings field.
-- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./...` — успешно.
-- `git diff --check` — успешно.
-- CLI `integration install` создал launcher в отдельном временном `XDG_DATA_HOME` с пробелами в пути; `stat` подтвердил mode `600`; `desktop-file-validate` завершился успешно. `integration remove` удалил launcher, профиль остался на месте.
-- `isobox help` — успешно, команда доступна без desktop integration.
-- `gio launch <temporary .desktop file>` — desktop runtime не запустился: `Failed to parse arguments: Cannot open display:`. Launcher удалён после проверки.
-- Фактический запуск из desktop session и видимость в desktop menu требуют runtime-приёмки на системе с графической сессией.
+- `gofmt` для integration, profile и CLI Go-файлов — успешно; `git diff --check` — успешно.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./internal/integration` — успешно; проверены создание/update/remove, режим `0600`, защита чужих файлов, system/user/profile precedence и отказ на неизвестном settings field.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./...` — успешно при исходной реализации F08; полный прогон повторён после актуальных изменений в текущем рабочем дереве.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — успешно; GVM предупреждает о read-only stat cache в `/home/user/.gvm`, код возврата 0.
+- `python3 -c 'import ast, pathlib; ast.parse(pathlib.Path("ROADMAP/F08-system-integration/source/desktop_acceptance.py").read_text(encoding="utf-8"))'` — успешно.
+- `python3 ROADMAP/F08-system-integration/source/desktop_acceptance.py /tmp/isobox-f08-live-isobox` — успешно под обычным пользователем в живой X11-сессии:
+  - `help` и прямой `run` работают без launcher и settings файлов;
+  - первый system XDG config побеждает следующий, а частичный user DNS override сливается по полям;
+  - пользовательский `network_mode=off` перекрывает системный `direct`; команда стартует при скрытых `pasta` и `slirp4netns`;
+  - install создаёт валидный mode-`0600` launcher в XDG data path с пробелами;
+  - `gio launch` реально запускает `isobox run`; marker создан в app HOME при profile path с пробелами и argv с пробелами, `%` и `$`;
+  - remove удаляет launcher, сохраняя profile и app HOME.
+- Предыдущий вызов `gio launch` в ограниченной оболочке не имел доступа к дисплею (`Cannot open display`). Повторная проверка из активной X11-сессии прошла; этот отказ был ограничением оболочки.
+
+Подробная повторяемая инструкция — `ROADMAP/F08-system-integration/source/README.md`.

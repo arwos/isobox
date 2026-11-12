@@ -19,4 +19,4 @@
   ```
 
 - Использованы официальные спецификации: [Desktop Entry 1.5](https://specifications.freedesktop.org/desktop-entry/latest-single/) и [XDG Base Directory](https://specifications.freedesktop.org/basedir/). `Exec` не запускается через shell; executable разрешается в абсолютный путь при создании launcher.
-- Runtime-проверка видимости launcher в desktop menu и его запуска из desktop session остаётся открытой.
+- Live-приёмка прошла в активной пользовательской X11-сессии: launcher лежал в XDG applications directory, `desktop-file-validate` принял его, а `gio launch` создал marker в app HOME через bwrap. Проверены пробелы и `%`/`$` в профиле/аргументах, прямой CLI без launcher, приоритет первого системного settings файла и пользовательский network override при отсутствующих pasta/slirp. Предыдущая попытка из ограниченной оболочки без доступа к X display (`Cannot open display`) не отражала состояние графической сессии.
