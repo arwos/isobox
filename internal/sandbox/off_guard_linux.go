@@ -5,6 +5,8 @@ package sandbox
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,9 +19,16 @@ import (
 
 const (
 	capNetAdmin        = 12
-	capEffMask         = uint64(1) << capNetAdmin
+	capSysAdmin        = 21
+	capNetAdminMask    = uint64(1) << capNetAdmin
+	capSysAdminMask    = uint64(1) << capSysAdmin
+	capSetupMask       = capNetAdminMask | capSysAdminMask
 	capVersion3        = 0x20080522
 	prSetNoNewPrivs    = 38
+	prCapAmbient       = 47
+	prCapAmbientRaise  = 2
+	prCapAmbientClear  = 4
+	cloneNewNet        = 0x40000000
 	capabilitySetsSize = 2
 )
 
@@ -40,12 +49,8 @@ func RunOffGuardHelper(args []string) (int, bool) {
 	if len(args) == 0 || args[0] != internalOffGuardCommand {
 		return 0, false
 	}
-	if len(args) < 6 || !filepath.IsAbs(args[1]) || args[4] != "--" || len(args[5]) == 0 {
+	if len(args) < 8 || !filepath.IsAbs(args[1]) || args[4] != "--gate-path" || args[5] != internalOffGuardGatePath || args[6] != "--" || len(args[7]) == 0 {
 		fmt.Fprintln(os.Stderr, "isobox: invalid internal off-network guard arguments")
-		return 125, true
-	}
-	if err := verifyGuardCapabilities(); err != nil {
-		fmt.Fprintf(os.Stderr, "isobox: cannot safely install the off-network egress filter: %v\n", err)
 		return 125, true
 	}
 	tcpPorts, err := parsePortSet(args[2])
@@ -67,41 +72,73 @@ func RunOffGuardHelper(args []string) (int, bool) {
 	// setup goroutine on one thread through the final exec so the application
 	// inherits exactly the thread whose privileges were reduced.
 	runtime.LockOSThread()
-	if err := setNoNewPrivs(); err != nil {
-		fmt.Fprintf(os.Stderr, "isobox: set no_new_privs before application launch: %v\n", err)
+	if err := verifyGuardCapabilities(); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot safely install the off-network egress filter: %v\n", err)
 		return 125, true
 	}
-	if err := installOffFilter(args[1], tcpPorts, udpPorts); err != nil {
-		fmt.Fprintf(os.Stderr, "isobox: cannot install the off-network egress filter: %v\n", err)
+	if err := setNoNewPrivs(); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: set no_new_privs before network setup: %v\n", err)
+		return 125, true
+	}
+	if err := unshareNetworkNamespace(); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot create the isolated network namespace: %v\n", err)
+		return 125, true
+	}
+	if err := enableNftCapabilityInheritance(); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot pass firewall capability to nft: %v\n", err)
+		return 125, true
+	}
+	filterErr := installOffFilter(args[1], tcpPorts, udpPorts)
+	if err := clearAmbientCapabilities(); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot clear inherited firewall capabilities after nft: %v\n", err)
+		return 125, true
+	}
+	if filterErr != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot install the off-network egress filter: %v\n", filterErr)
 		return 125, true
 	}
 
-	program, err := exec.LookPath(args[5])
+	program, err := exec.LookPath(args[7])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "isobox: application executable %q cannot be found inside the sandbox: %v\n", args[5], err)
+		fmt.Fprintf(os.Stderr, "isobox: application executable %q cannot be found inside the sandbox: %v\n", args[7], err)
 		return 127, true
 	}
 	if err := dropCapabilities(); err != nil {
 		fmt.Fprintf(os.Stderr, "isobox: cannot drop firewall capabilities before application launch: %v\n", err)
 		return 125, true
 	}
+	gate, err := net.Dial("unix", args[5])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot connect to the host startup gate: %v\n", err)
+		return 125, true
+	}
+	if _, err := io.WriteString(gate, "ready\n"); err != nil {
+		_ = gate.Close()
+		fmt.Fprintf(os.Stderr, "isobox: cannot announce the isolated network namespace: %v\n", err)
+		return 125, true
+	}
 	if err := installNamespaceSeccomp(); err != nil {
+		_ = gate.Close()
 		fmt.Fprintf(os.Stderr, "isobox: cannot prevent nested namespace creation before application launch: %v\n", err)
 		return 125, true
 	}
-	if err := syscall.Exec(program, args[5:], os.Environ()); err != nil {
-		fmt.Fprintf(os.Stderr, "isobox: cannot execute application %q: %v\n", args[5], err)
+	if err := waitForStartupGate(gate); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: startup aborted before the network backend was ready: %v\n", err)
+		return 125, true
+	}
+	if err := syscall.Exec(program, args[7:], os.Environ()); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot execute application %q: %v\n", args[7], err)
 		return 126, true
 	}
 	return 0, true
 }
 
 func verifyGuardCapabilities() error {
-	status, err := os.ReadFile("/proc/self/status")
+	status, err := os.ReadFile("/proc/thread-self/status")
 	if err != nil {
 		return fmt.Errorf("read process capability state: %w", err)
 	}
-	var effective, permitted string
+	var effective, permitted, inheritable, ambient string
 	for _, line := range strings.Split(string(status), "\n") {
 		name, value, ok := strings.Cut(line, ":")
 		if !ok {
@@ -112,9 +149,13 @@ func verifyGuardCapabilities() error {
 			effective = strings.TrimSpace(value)
 		case "CapPrm":
 			permitted = strings.TrimSpace(value)
+		case "CapInh":
+			inheritable = strings.TrimSpace(value)
+		case "CapAmb":
+			ambient = strings.TrimSpace(value)
 		}
 	}
-	if effective == "" || permitted == "" {
+	if effective == "" || permitted == "" || inheritable == "" || ambient == "" {
 		return fmt.Errorf("process capability state is incomplete")
 	}
 	eff, err := strconv.ParseUint(effective, 16, 64)
@@ -125,10 +166,110 @@ func verifyGuardCapabilities() error {
 	if err != nil {
 		return fmt.Errorf("parse permitted capabilities: %w", err)
 	}
-	if eff != capEffMask || prm != capEffMask {
-		return fmt.Errorf("expected only CAP_NET_ADMIN for this setup step, effective=%s permitted=%s", effective, permitted)
+	inh, err := strconv.ParseUint(inheritable, 16, 64)
+	if err != nil {
+		return fmt.Errorf("parse inheritable capabilities: %w", err)
+	}
+	amb, err := strconv.ParseUint(ambient, 16, 64)
+	if err != nil {
+		return fmt.Errorf("parse ambient capabilities: %w", err)
+	}
+	if eff != capSetupMask || prm != capSetupMask || inh&^capSetupMask != 0 || amb&^capSetupMask != 0 || amb&^inh != 0 {
+		return fmt.Errorf("expected only CAP_SYS_ADMIN and CAP_NET_ADMIN for namespace setup, effective=%s permitted=%s inheritable=%s ambient=%s", effective, permitted, inheritable, ambient)
 	}
 	return nil
+}
+
+func unshareNetworkNamespace() error {
+	_, _, errno := syscall.RawSyscall(syscall.SYS_UNSHARE, cloneNewNet, 0, 0)
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
+// enableNftCapabilityInheritance gives only the nft child CAP_NET_ADMIN after
+// no_new_privs has been set. Without an ambient capability, exec would strip
+// the helper's namespace capability before nft can install the filter.
+func enableNftCapabilityInheritance() error {
+	header := capUserHeader{version: capVersion3}
+	data := [capabilitySetsSize]capUserData{{
+		effective:   uint32(capNetAdminMask),
+		permitted:   uint32(capNetAdminMask),
+		inheritable: uint32(capNetAdminMask),
+	}}
+	_, _, errno := syscall.RawSyscall(syscall.SYS_CAPSET,
+		uintptr(unsafe.Pointer(&header)),
+		uintptr(unsafe.Pointer(&data[0])),
+		0,
+	)
+	runtime.KeepAlive(&header)
+	runtime.KeepAlive(&data)
+	if errno != 0 {
+		return fmt.Errorf("drop CAP_SYS_ADMIN and prepare CAP_NET_ADMIN inheritance: %w", errno)
+	}
+	if err := clearAmbientCapabilities(); err != nil {
+		return fmt.Errorf("clear ambient capabilities before nft: %w", err)
+	}
+	_, _, errno = syscall.RawSyscall6(syscall.SYS_PRCTL, prCapAmbient, prCapAmbientRaise, capNetAdmin, 0, 0, 0)
+	if errno != 0 {
+		return fmt.Errorf("raise CAP_NET_ADMIN ambient: %w", errno)
+	}
+	status, err := os.ReadFile("/proc/thread-self/status")
+	if err != nil {
+		return fmt.Errorf("verify nft capability inheritance: %w", err)
+	}
+	for _, line := range strings.Split(string(status), "\n") {
+		name, value, ok := strings.Cut(line, ":")
+		if !ok || (name != "CapEff" && name != "CapPrm" && name != "CapInh" && name != "CapAmb") {
+			continue
+		}
+		caps, err := strconv.ParseUint(strings.TrimSpace(value), 16, 64)
+		if err != nil {
+			return fmt.Errorf("parse capability field %s: %w", name, err)
+		}
+		if caps != capNetAdminMask {
+			return fmt.Errorf("expected only CAP_NET_ADMIN in %s after enabling nft inheritance", name)
+		}
+	}
+	return nil
+}
+
+func waitForStartupGate(gate net.Conn) error {
+	defer gate.Close()
+	var signal [1]byte
+	if _, err := io.ReadFull(gate, signal[:]); err != nil {
+		return err
+	}
+	if signal[0] != 1 {
+		return fmt.Errorf("invalid startup gate signal")
+	}
+	return nil
+}
+
+func clearAmbientCapabilities() error {
+	_, _, errno := syscall.RawSyscall6(syscall.SYS_PRCTL, prCapAmbient, prCapAmbientClear, 0, 0, 0, 0)
+	if errno != 0 {
+		return errno
+	}
+	status, err := os.ReadFile("/proc/thread-self/status")
+	if err != nil {
+		return fmt.Errorf("verify cleared ambient capabilities: %w", err)
+	}
+	for _, line := range strings.Split(string(status), "\n") {
+		if !strings.HasPrefix(line, "CapAmb:") {
+			continue
+		}
+		caps, err := strconv.ParseUint(strings.TrimSpace(strings.TrimPrefix(line, "CapAmb:")), 16, 64)
+		if err != nil {
+			return fmt.Errorf("parse ambient capabilities after nft: %w", err)
+		}
+		if caps != 0 {
+			return fmt.Errorf("ambient capabilities remain after nft")
+		}
+		return nil
+	}
+	return fmt.Errorf("ambient capability state is missing after nft")
 }
 
 func parsePortSet(value string) ([]string, error) {
@@ -212,7 +353,7 @@ func dropCapabilities() error {
 		return errno
 	}
 
-	status, err := os.ReadFile("/proc/self/status")
+	status, err := os.ReadFile("/proc/thread-self/status")
 	if err != nil {
 		return fmt.Errorf("verify dropped capabilities: %w", err)
 	}

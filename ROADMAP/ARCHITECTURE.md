@@ -1,6 +1,6 @@
 # Архитектура и продуктовый план isobox
 
-Статус: roadmap согласован пользователем 2026-11-12. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация, host preflight, bwrap runtime, профильные mounts, изолированный HOME и ручные GUI grants. F05 содержит режим `off` с fail-closed egress guard и опубликованными портами через pasta, а также `direct` на pasta/slirp с DNS, forwarding и runtime fallback до запуска приложения. Direct IPv4 acceptance прошла на pasta и slirp; внешняя IPv6-приёмка и host acceptance для nft ingress/ответов в `off` с портами остаются открыты. F07 содержит cgroup/rlimit backend с fail-closed startup gate; F07-T01 прошла live-приёмку на пользовательском systemd scope. F08 содержит пользовательские desktop launchers и layered XDG settings; live-приёмка F08-T01 прошла в пользовательской X11-сессии. Proxy runtime остаётся не реализованным.
+Статус: roadmap согласован пользователем 2026-11-12. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация, host preflight, bwrap runtime, профильные mounts, изолированный HOME и ручные GUI grants. F05 содержит режим `off` с fail-closed egress guard и опубликованными портами через pasta, а также `direct` на pasta/slirp с DNS, forwarding и runtime fallback до запуска приложения. Live acceptance для `off` с TCP/UDP портами прошла; direct IPv4 acceptance прошла на pasta и slirp. Внешняя IPv6-приёмка для direct остаётся открыта. F07 содержит cgroup/rlimit backend с fail-closed startup gate; F07-T01 прошла live-приёмку на пользовательском systemd scope. F08 содержит пользовательские desktop launchers и layered XDG settings; live-приёмка F08-T01 прошла в пользовательской X11-сессии. Proxy runtime остаётся не реализованным.
 
 ## Назначение и границы
 
@@ -58,7 +58,7 @@ internal/limits/        применение лимитов
 internal/integration/   необязательные desktop/system defaults
 ```
 
-`cmd/isobox/`, `internal/cli/`, `internal/profile/`, `internal/preflight/`, `internal/sandbox/`, `internal/limits/` и `internal/integration/` содержат CLI, схемы документов, host capability checks, bwrap root, профильные limits и optional XDG integration. Для `off` с объявленными портами runtime удерживает приложение до pasta и устанавливает nftables default-drop guard. Для `direct` он выбирает pasta, допускает slirp при сохранении возможностей профиля, фиксирует DNS в read-only resolver file и открывает только объявленные host forwards. Runtime acceptance F05 остаётся открытой; F07 и F08 пройдены. Proxy/SOCKS5/TUN остаётся отдельной roadmap задачей.
+`cmd/isobox/`, `internal/cli/`, `internal/profile/`, `internal/preflight/`, `internal/sandbox/`, `internal/limits/` и `internal/integration/` содержат CLI, схемы документов, host capability checks, bwrap root, профильные limits и optional XDG integration. Для `off` с объявленными портами helper создаёт network namespace после bwrap mounts, ставит nftables default-drop guard и ждёт, пока supervisor подключит pasta и проверит его readiness. Для `direct` runtime выбирает pasta, допускает slirp при сохранении возможностей профиля, фиксирует DNS в read-only resolver file и открывает только объявленные host forwards. В F05 остаётся внешняя IPv6-приёмка direct; F07 и F08 пройдены. Proxy/SOCKS5/TUN остаётся отдельной roadmap задачей.
 
 ## Зависимости и проверенные источники
 

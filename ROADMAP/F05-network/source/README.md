@@ -43,8 +43,10 @@ directories, and runtime state under a temporary directory.
 
 `pasta_off_acceptance.py` exercises `off` mode with one declared TCP+UDP
 host port. It checks that the sandbox cannot reach a host listener or public
-TCP/UDP DNS endpoint, that host TCP/UDP requests reach the declared app port
-and receive replies, and that an unannounced guest TCP listener stays closed.
+TCP/UDP DNS endpoint, checks ICMP socket/egress denial where the kernel allows
+the probe, verifies that host TCP/UDP requests reach the declared app port
+and receive replies, and confirms that unannounced guest TCP/UDP listeners
+stay closed.
 
 ```sh
 python3 ROADMAP/F05-network/source/pasta_off_acceptance.py /tmp/isobox-live

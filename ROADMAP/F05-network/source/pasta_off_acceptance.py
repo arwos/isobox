@@ -59,7 +59,7 @@ def write_profile(root, home, port):
 def host_gateway_probe_app():
     return textwrap.dedent(
         r"""
-        import socket, struct, sys
+        import select, socket, struct, sys
         published, unannounced, host_probe_port = map(int, sys.argv[1:4])
 
         gateway = None
@@ -92,8 +92,8 @@ def host_gateway_probe_app():
         udp_probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         udp_probe.settimeout(1)
         try:
-            udp_probe.sendto(query, ('1.1.1.1', 53))
             try:
+                udp_probe.sendto(query, ('1.1.1.1', 53))
                 udp_probe.recvfrom(2048)
             except OSError:
                 pass
@@ -101,6 +101,27 @@ def host_gateway_probe_app():
                 raise SystemExit('off mode received an external UDP/DNS response')
         finally:
             udp_probe.close()
+
+        try:
+            icmp_probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_ICMP)
+        except OSError as error:
+            print('ICMP socket unavailable:', error, flush=True)
+            print('ICMP_BLOCKED_SOCKET', flush=True)
+        else:
+            icmp_probe.settimeout(1)
+            try:
+                try:
+                    packet = bytearray(b'\x08\x00\x00\x00\x49\x58\x00\x01')
+                    checksum = (~sum((packet[index] << 8) + packet[index + 1] for index in range(0, len(packet), 2))) & 0xffff
+                    packet[2:4] = struct.pack('!H', checksum)
+                    icmp_probe.sendto(packet, ('1.1.1.1', 0))
+                    icmp_probe.recvfrom(2048)
+                except OSError:
+                    print('ICMP_BLOCKED_EGRESS', flush=True)
+                else:
+                    raise SystemExit('off mode received an external ICMP response')
+            finally:
+                icmp_probe.close()
 
         tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -112,6 +133,8 @@ def host_gateway_probe_app():
         hidden.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         hidden.bind(('0.0.0.0', unannounced))
         hidden.listen(1)
+        hidden_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        hidden_udp.bind(('0.0.0.0', unannounced))
         print('READY', flush=True)
 
         connection, _ = tcp.accept()
@@ -123,6 +146,11 @@ def host_gateway_probe_app():
         if message != b'udp-request':
             raise SystemExit('published UDP port received an invalid request')
         udp.sendto(b'udp-response', peer)
+        ready, _, _ = select.select([hidden_udp], [], [], 1.5)
+        if ready:
+            message, peer = hidden_udp.recvfrom(64)
+            hidden_udp.sendto(b'hidden-udp-response', peer)
+            raise SystemExit('off mode received a datagram for an unannounced port')
         print('DONE', flush=True)
         """
     )
@@ -220,12 +248,15 @@ def main():
     )
     try:
         stderr_parts = []
+        stdout_parts = []
         marker = ""
         deadline = time.monotonic() + 25
         while time.monotonic() < deadline and process.poll() is None and marker != "READY":
             ready, _, _ = select.select([process.stdout, process.stderr], [], [], 0.25)
             if process.stdout in ready:
-                marker = process.stdout.readline().strip()
+                line = process.stdout.readline()
+                stdout_parts.append(line)
+                marker = line.strip()
             if process.stderr in ready:
                 chunk = os.read(process.stderr.fileno(), 8192)
                 if chunk:
@@ -233,6 +264,7 @@ def main():
         if marker != "READY":
             kill_test_process_group(process)
             stdout, stderr = process.communicate()
+            stdout = "".join(stdout_parts) + stdout
             stderr = "".join(stderr_parts) + stderr
             raise RuntimeError(
                 "sandbox did not become ready; "
@@ -264,14 +296,31 @@ def main():
             if client.connect_ex(("127.0.0.1", published_port + 1)) == 0:
                 raise RuntimeError("host reached an unannounced guest TCP port")
 
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+            client.settimeout(2)
+            client.sendto(b"hidden-udp-request", ("127.0.0.1", published_port + 1))
+            try:
+                client.recvfrom(64)
+            except socket.timeout:
+                pass
+            else:
+                raise RuntimeError("host received a response from an unannounced guest UDP port")
+
         stdout, stderr = process.communicate(timeout=10)
+        stdout = "".join(stdout_parts) + stdout
         if process.returncode != 0 or "DONE" not in stdout:
             raise RuntimeError(
                 f"sandbox exited {process.returncode}\nstdout:\n{stdout}\nstderr:\n{stderr}"
             )
+        if "ICMP_BLOCKED_SOCKET" in stdout:
+            print("PASS sandbox process could not create an ICMP socket")
+        elif "ICMP_BLOCKED_EGRESS" in stdout:
+            print("PASS ICMP echo probe received no response")
+        else:
+            raise RuntimeError("off mode did not confirm the ICMP block")
         print("PASS off mode blocked host/Internet TCP and external UDP/DNS")
         print("PASS host TCP/UDP requests reached the announced port and received replies")
-        print("PASS host could not reach the unannounced guest TCP port")
+        print("PASS host could not reach the unannounced guest TCP/UDP port")
     finally:
         host_probe.close()
         if process.poll() is None:

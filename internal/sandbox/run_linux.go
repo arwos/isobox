@@ -8,11 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/arwos/isobox/internal/limits"
 	"github.com/arwos/isobox/internal/profile"
@@ -67,22 +71,51 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 	if network != nil && network.activeBackend() == "none" {
 		return 0, fmt.Errorf("network supervisor requires a selected backend")
 	}
+	lateNetworkNamespace := network != nil && network.Mode == profile.NetworkModeOff && len(rules) != 0
+	var hostNetworkNamespace uint64
+	if lateNetworkNamespace {
+		var err error
+		hostNetworkNamespace, err = networkNamespaceInode("/proc/self/ns/net")
+		if err != nil {
+			return 0, fmt.Errorf("inspect host network namespace before off-mode launch: %w", err)
+		}
+	}
 	needsGate := network != nil || limits.Any(requested)
 	var gateReader, gateWriter *os.File
+	var offGuardGate *offGuardStartupGate
 	if needsGate {
-		var err error
-		gateReader, gateWriter, err = os.Pipe()
-		if err != nil {
-			return 0, fmt.Errorf("create bwrap network setup gate: %w", err)
+		if lateNetworkNamespace {
+			var err error
+			offGuardGate, err = newOffGuardStartupGate()
+			if err != nil {
+				closeExtraFiles(command.ExtraFiles)
+				return 0, fmt.Errorf("create off-mode startup gate: %w", err)
+			}
+			command.Args, err = addBwrapMount(command.Args, "--ro-bind", offGuardGate.directory, "/run/.isobox-control")
+			if err != nil {
+				_ = offGuardGate.Close()
+				closeExtraFiles(command.ExtraFiles)
+				return 0, err
+			}
+		} else {
+			var err error
+			gateReader, gateWriter, err = os.Pipe()
+			if err != nil {
+				closeExtraFiles(command.ExtraFiles)
+				return 0, fmt.Errorf("create bwrap network setup gate: %w", err)
+			}
+			gateFD := 3 + len(command.ExtraFiles)
+			if err := setOptionFD(command.Args, "--block-fd", gateFD); err != nil {
+				_ = gateReader.Close()
+				_ = gateWriter.Close()
+				closeExtraFiles(command.ExtraFiles)
+				return 0, err
+			}
+			command.ExtraFiles = append(command.ExtraFiles, gateReader)
 		}
-		gateFD := 3 + len(command.ExtraFiles)
-		if err := setOptionFD(command.Args, "--block-fd", gateFD); err != nil {
-			_ = gateReader.Close()
-			_ = gateWriter.Close()
-			closeExtraFiles(command.ExtraFiles)
-			return 0, err
-		}
-		command.ExtraFiles = append(command.ExtraFiles, gateReader)
+	}
+	if offGuardGate != nil {
+		defer offGuardGate.Close()
 	}
 	statusFD := 3 + len(command.ExtraFiles)
 	if err := setStatusFD(command.Args, statusFD); err != nil {
@@ -151,7 +184,13 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 			if status.ChildPID > 0 {
 				childPID = status.ChildPID
 				if network != nil && forwarder == nil {
-					forwarder, err = setupNetworkBackendWithFallback(network, childPID, rules, command.Stdout, command.Stderr, startNetworkBackend)
+					networkPID := childPID
+					if lateNetworkNamespace {
+						networkPID, err = offGuardGate.WaitForNamespace(hostNetworkNamespace, childPID)
+					}
+					if err == nil {
+						forwarder, err = setupNetworkBackendWithFallback(network, networkPID, rules, command.Stdout, command.Stderr, startNetworkBackend)
+					}
 					if err == nil && forwarder != nil {
 						forwarderDone = forwarder.doneChannel()
 					}
@@ -168,23 +207,34 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 							forwarder.stop()
 						}
 						terminateLaunch(command, childPID)
-						_ = gateWriter.Close()
+						if gateWriter != nil {
+							_ = gateWriter.Close()
+						}
 						<-waitResult
 						if network != nil {
 							return 125, fmt.Errorf("prepare %s network and profile limits: %w", network.activeBackend(), err)
 						}
 						return 125, fmt.Errorf("apply profile resource limits: %w", err)
 					}
-					if _, err := gateWriter.Write([]byte{1}); err != nil {
+					if offGuardGate != nil {
+						err = offGuardGate.Release()
+					} else {
+						_, err = gateWriter.Write([]byte{1})
+					}
+					if err != nil {
 						if forwarder != nil {
 							forwarder.stop()
 						}
 						terminateLaunch(command, childPID)
-						_ = gateWriter.Close()
+						if gateWriter != nil {
+							_ = gateWriter.Close()
+						}
 						<-waitResult
-						return 125, fmt.Errorf("release bwrap after startup checks: %w", err)
+						return 125, fmt.Errorf("release application after startup checks: %w", err)
 					}
-					_ = gateWriter.Close()
+					if gateWriter != nil {
+						_ = gateWriter.Close()
+					}
 					gateReleased = true
 				}
 				for _, pending := range pendingSignals {
@@ -222,6 +272,229 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 			return processExitCode(waitErr)
 		}
 	}
+}
+
+func networkNamespaceInode(path string) (uint64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, fmt.Errorf("%s did not return Linux namespace metadata", path)
+	}
+	return stat.Ino, nil
+}
+
+type offGuardStartupGate struct {
+	listener   *net.UnixListener
+	connection *net.UnixConn
+	directory  string
+}
+
+func newOffGuardStartupGate() (*offGuardStartupGate, error) {
+	directory, err := os.MkdirTemp("", "isobox-off-gate-")
+	if err != nil {
+		return nil, err
+	}
+	socketPath := filepath.Join(directory, "gate.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		_ = os.RemoveAll(directory)
+		return nil, err
+	}
+	unixListener, ok := listener.(*net.UnixListener)
+	if !ok {
+		_ = listener.Close()
+		_ = os.RemoveAll(directory)
+		return nil, fmt.Errorf("startup gate listener is not a Unix socket")
+	}
+	if err := os.Chmod(socketPath, 0600); err != nil {
+		_ = unixListener.Close()
+		_ = os.RemoveAll(directory)
+		return nil, err
+	}
+	return &offGuardStartupGate{listener: unixListener, directory: directory}, nil
+}
+
+func (gate *offGuardStartupGate) WaitForNamespace(hostNamespace uint64, processPID int) (int, error) {
+	if gate == nil || gate.listener == nil {
+		return 0, fmt.Errorf("off-mode startup gate is unavailable")
+	}
+	if err := gate.listener.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return 0, err
+	}
+	connection, err := gate.listener.AcceptUnix()
+	if err != nil {
+		return 0, fmt.Errorf("accept internal helper network readiness: %w", err)
+	}
+	gate.connection = connection
+	peerPID, err := unixPeerPID(connection)
+	if err != nil {
+		return 0, fmt.Errorf("inspect internal helper process credentials: %w", err)
+	}
+	if peerPID != processPID {
+		parentPID, err := processParentPID(peerPID)
+		if err != nil {
+			return 0, fmt.Errorf("inspect internal helper parent PID: %w", err)
+		}
+		if parentPID != processPID {
+			return 0, fmt.Errorf("internal helper peer PID %d has parent PID %d, want bwrap child PID %d", peerPID, parentPID, processPID)
+		}
+	}
+	if err := connection.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return 0, err
+	}
+	var message []byte
+	for len(message) < len("ready\n") {
+		var value [1]byte
+		if _, err := io.ReadFull(connection, value[:]); err != nil {
+			return 0, fmt.Errorf("read internal helper network readiness: %w", err)
+		}
+		message = append(message, value[0])
+	}
+	if string(message) != "ready\n" {
+		return 0, fmt.Errorf("internal helper sent an invalid network readiness message")
+	}
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		pid, err := findNetworkNamespaceThread(peerPID, hostNamespace)
+		if err == nil {
+			if err := connection.SetDeadline(time.Time{}); err != nil {
+				return 0, fmt.Errorf("clear internal helper startup deadline: %w", err)
+			}
+			return pid, nil
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			return 0, fmt.Errorf("find internal helper thread in isolated network namespace: %w", err)
+		}
+	}
+}
+
+func unixPeerPID(connection *net.UnixConn) (int, error) {
+	raw, err := connection.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var pid int
+	var socketErr error
+	if err := raw.Control(func(fd uintptr) {
+		credentials, err := syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
+		if err != nil {
+			socketErr = err
+			return
+		}
+		pid = int(credentials.Pid)
+	}); err != nil {
+		return 0, err
+	}
+	if socketErr != nil {
+		return 0, socketErr
+	}
+	if pid <= 0 {
+		return 0, fmt.Errorf("Unix peer returned invalid PID %d", pid)
+	}
+	return pid, nil
+}
+
+func processParentPID(pid int) (int, error) {
+	contents, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, err
+	}
+	endCommand := strings.LastIndexByte(string(contents), ')')
+	if endCommand < 0 {
+		return 0, fmt.Errorf("process stat entry has no command terminator")
+	}
+	fields := strings.Fields(string(contents)[endCommand+1:])
+	if len(fields) < 2 {
+		return 0, fmt.Errorf("process stat entry is incomplete")
+	}
+	parent, err := strconv.Atoi(fields[1])
+	if err != nil || parent <= 0 {
+		return 0, fmt.Errorf("process stat entry has invalid parent PID %q", fields[1])
+	}
+	return parent, nil
+}
+
+func findNetworkNamespaceThread(processPID int, hostNamespace uint64) (int, error) {
+	taskDirectory := fmt.Sprintf("/proc/%d/task", processPID)
+	threads, err := os.ReadDir(taskDirectory)
+	if err != nil {
+		return 0, fmt.Errorf("read helper thread list %s: %w", taskDirectory, err)
+	}
+	for _, thread := range threads {
+		pid, err := strconv.Atoi(thread.Name())
+		if err != nil || pid <= 0 {
+			continue
+		}
+		path := filepath.Join(taskDirectory, thread.Name(), "ns", "net")
+		inode, err := networkNamespaceInode(path)
+		if err == nil && inode != hostNamespace {
+			return pid, nil
+		}
+	}
+	return 0, fmt.Errorf("no helper thread in %s has an isolated network namespace", taskDirectory)
+}
+
+func (gate *offGuardStartupGate) Release() error {
+	if gate == nil || gate.connection == nil {
+		return fmt.Errorf("off-mode startup gate is not connected")
+	}
+	_, writeErr := gate.connection.Write([]byte{1})
+	connectionErr := gate.connection.Close()
+	listenerErr := gate.listener.Close()
+	removeErr := os.RemoveAll(gate.directory)
+	if writeErr != nil {
+		return writeErr
+	}
+	if connectionErr != nil {
+		return connectionErr
+	}
+	if listenerErr != nil && !errors.Is(listenerErr, net.ErrClosed) {
+		return listenerErr
+	}
+	return removeErr
+}
+
+func (gate *offGuardStartupGate) Close() error {
+	if gate == nil {
+		return nil
+	}
+	var closeErr error
+	if gate.connection != nil {
+		closeErr = gate.connection.Close()
+	}
+	if gate.listener != nil {
+		if err := gate.listener.Close(); closeErr == nil {
+			closeErr = err
+		}
+	}
+	removeErr := os.RemoveAll(gate.directory)
+	if closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+		return closeErr
+	}
+	return removeErr
+}
+
+func addBwrapMount(args []string, option, source, destination string) ([]string, error) {
+	for index, argument := range args {
+		if argument != "--" {
+			continue
+		}
+		mountArgs := []string{option, source, destination}
+		result := make([]string, 0, len(args)+len(mountArgs))
+		result = append(result, args[:index]...)
+		result = append(result, mountArgs...)
+		result = append(result, args[index:]...)
+		return result, nil
+	}
+	return nil, fmt.Errorf("bwrap command has no command delimiter for the internal startup gate mount")
 }
 
 func terminateLaunch(command *exec.Cmd, childPID int) {

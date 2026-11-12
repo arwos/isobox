@@ -90,3 +90,16 @@
 - `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-f05-fallback --backend auto --simulate-pasta-failure --dns-only` — прошло: после injected pasta startup failure через slirp работают host-default DNS, profile DNS `1.1.1.1`, внешний IPv4 TCP и UDP.
 - Во всех полных прогонах внешний IPv6 пропущен: host не имеет IPv6 default route. Это остаётся незакрытой частью T02.
 - Один повтор `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-f05-fallback --backend pasta` прошёл диапазон, но остановился на TCP-only setup из-за `Couldn't switch to pasta namespaces: Operation not permitted`; приложение не запустилось. В некоторых отдельных запусках slirp также возвращал `setns(CLONE_NEWNET): Operation not permitted`; запуск оставался за startup gate. Полные slirp и auto pasta-first прогоны, а также локальный и DNS acceptance injected fallback выше прошли. Если оба backend откажут, запуск остаётся fail-closed.
+
+## F05-T01: итоговая off-mode acceptance
+
+Первоначальный `nft ... Operation not permitted` был связан с namespace topology bwrap на этом host: при `--dev /dev` bwrap входил во вложенный user namespace, тогда как созданный ранее network namespace принадлежал предыдущему namespace. Для off+ports network namespace теперь создаёт внутренний helper после завершения bwrap mount setup. Он применяет firewall, сбрасывает capabilities и ждёт на временном Unix socket; supervisor обнаруживает host TID с изолированным netns, поднимает pasta и только после его PID/socket readiness открывает helper gate.
+
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./...` — прошло.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build -o /tmp/isobox-f05-final ./cmd/isobox` — прошло; GVM сообщил, что его stat cache в `/home/user/.gvm/.cache` недоступен для записи, exit code сборки 0.
+- Python `ast.parse` для `source/pasta_off_acceptance.py` — прошло.
+- `python3 ROADMAP/F05-network/source/pasta_off_acceptance.py /tmp/isobox-f05-final` — прошло на обычном UID с разрешённым runtime namespace acceptance. Проверены отказ TCP к host listener и `1.1.1.1:443`, блокировка UDP/DNS, невозможность создать ICMP datagram socket (`EPERM`), host TCP/UDP запросы к объявленному `127.0.0.1` порту с ответами приложения и отказ host TCP/UDP к соседнему не объявленному порту.
+- Runtime-результат: `PASS sandbox process could not create an ICMP socket`; `PASS off mode blocked host/Internet TCP and external UDP/DNS`; `PASS host TCP/UDP requests reached the announced port and received replies`; `PASS host could not reach the unannounced guest TCP/UDP port`.
+- Ранние неуспешные прогоны выше остаются историей fail-closed поведения до изменения порядка создания namespace; они не описывают текущий результат.
+
+F05-T01 принята. F05-T02 остаётся `[!]` только из-за непроверенного внешнего IPv6: на host нет IPv6 default route.

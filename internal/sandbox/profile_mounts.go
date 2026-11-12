@@ -70,10 +70,12 @@ func validateProfileMountTargets(mounts []profileMount) error {
 
 func isReservedMountTarget(target string) bool {
 	switch target {
-	case "/proc", "/dev", "/tmp", "/run", "/var/tmp", "/root", "/home", sandboxHome, sandboxGUIRuntime, "/tmp/.X11-unix":
+	case "/proc", "/dev", "/tmp", "/run", "/var/tmp", "/root", "/home", sandboxHome, sandboxGUIRuntime, internalOffGuardControlDir, "/tmp/.X11-unix":
 		return true
 	default:
-		return strings.HasPrefix(target, sandboxGUIRuntime+string(filepath.Separator)) || strings.HasPrefix(target, "/tmp/.X11-unix"+string(filepath.Separator))
+		return strings.HasPrefix(target, sandboxGUIRuntime+string(filepath.Separator)) ||
+			strings.HasPrefix(target, internalOffGuardControlDir+string(filepath.Separator)) ||
+			strings.HasPrefix(target, "/tmp/.X11-unix"+string(filepath.Separator))
 	}
 }
 

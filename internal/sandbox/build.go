@@ -28,6 +28,8 @@ type systemMount struct {
 
 const sandboxHome = "/home/isobox"
 const internalOffGuardCommand = "__isobox_internal_off_guard"
+const internalOffGuardControlDir = "/run/.isobox-control"
+const internalOffGuardGatePath = internalOffGuardControlDir + "/gate.sock"
 
 // BuildCommand creates a bwrap command for the supported portion of the
 // current sandbox profile. Host paths are limited to fixed runtime paths and
@@ -83,6 +85,8 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	directNetwork := config.NetworkMode == profile.NetworkModeDirect
 	activeBackend := network.activeBackend()
 	args := []string{"--unshare-user"}
+	// The off-mode guard creates its netns after bwrap mounts: some bwrap
+	// setups enter a nested user namespace while preparing /dev.
 	if !offGuard {
 		args = append(args, "--disable-userns", "--assert-userns-disabled")
 	}
@@ -90,10 +94,12 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		"--unshare-pid",
 		"--unshare-ipc",
 		"--unshare-uts",
-		"--unshare-net",
 		"--new-session",
 		"--die-with-parent",
 	)
+	if !offGuard {
+		args = append(args, "--unshare-net")
+	}
 	for _, mount := range systemMounts {
 		args = append(args, "--ro-bind", mount.source, mount.destination)
 	}
@@ -150,10 +156,11 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		}
 		args = append(args,
 			"--ro-bind", binary, "/tmp/.isobox-internal",
+			"--cap-add", "CAP_SYS_ADMIN",
 			"--cap-add", "CAP_NET_ADMIN",
 		)
 	}
-	if activeBackend != "none" || limits.Any(config.Limits) {
+	if !offGuard && (activeBackend != "none" || limits.Any(config.Limits)) {
 		args = append(args, "--block-fd", "3")
 	}
 	args = append(args,
@@ -174,7 +181,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		if udpPorts == "" {
 			udpPorts = "-"
 		}
-		args = append(args, "/tmp/.isobox-internal", internalOffGuardCommand, nftPath, tcpPorts, udpPorts, "--")
+		args = append(args, "/tmp/.isobox-internal", internalOffGuardCommand, nftPath, tcpPorts, udpPorts, "--gate-path", internalOffGuardGatePath, "--")
 	}
 	args = append(args, application...)
 
