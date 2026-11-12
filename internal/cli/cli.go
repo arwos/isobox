@@ -10,6 +10,7 @@ import (
 
 	"github.com/arwos/isobox/internal/preflight"
 	"github.com/arwos/isobox/internal/profile"
+	"github.com/arwos/isobox/internal/sandbox"
 )
 
 const rootUsage = `Usage:
@@ -82,16 +83,26 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
 	}
-	if _, err = preflight.Check(effectiveProfile); err != nil {
+	capabilities, err := preflight.Check(effectiveProfile)
+	if err != nil {
 		fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
 	}
+	command, err := sandbox.BuildCommand(capabilities.Bubblewrap, effectiveProfile, options.Command)
+	if err != nil {
+		fmt.Fprintf(stderr, "isobox run: %v\n", err)
+		return 2
+	}
+	command.Stdin = os.Stdin
+	command.Stdout = stdout
+	command.Stderr = stderr
 
-	// Never run the requested program directly. The sandbox runtime is added by
-	// later roadmap tasks, so this command only checks the profile and fails
-	// closed until the sandbox runtime is available.
-	fmt.Fprintf(stderr, "isobox: sandbox runtime is not available yet; refusing to launch %q outside isolation\n", options.Command[0])
-	return 2
+	exitCode, err := sandbox.Run(command)
+	if err != nil {
+		fmt.Fprintf(stderr, "isobox run: sandbox launch failed: %v\n", err)
+		return 125
+	}
+	return exitCode
 }
 
 func parseRunArgs(args []string) (RunOptions, error) {
