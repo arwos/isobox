@@ -405,7 +405,10 @@ func readCPUSetCount(directory string) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	value := strings.TrimSpace(string(data))
+	return parseCPUSetCount(strings.TrimSpace(string(data)))
+}
+
+func parseCPUSetCount(value string) (uint64, error) {
 	if value == "" {
 		return 0, nil
 	}

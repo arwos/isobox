@@ -6,8 +6,8 @@
 
 ## Задачи
 
-- [~] F07-T01 — Применять профильные CPU, memory, process и open-file limits fail-closed.
+- [!] F07-T01 — Применять профильные CPU, memory, process и open-file limits fail-closed.
   - Шаги: исследовать доступные rootless cgroup/systemd controls и rlimits; выбрать механизм и проверять фактически применённые значения до запуска app; не подменять жёсткий лимит advisory-параметром.
   - Приёмка: CPU, memory, число процессов и открытых файлов ограничиваются согласно профилю; `process_count` применяется через cgroup task limit и учитывает потоки вместе с процессами. Если любой запрошенный лимит недоступен/ослаблен родительским cgroup, процесс приложения не стартует и причина названа пользователю.
   - Реализация: cgroup v2 через transient user scope `systemd-run` для CPU, memory и process/task limits; `RLIMIT_NOFILE` для открытых файлов. bwrap удерживает приложение за startup gate до проверки фактической cgroup и установки rlimit.
-  - Статус `[~]`: код и статические проверки готовы; runtime-приёмка cgroup/systemd в текущем окружении невозможна, см. `QA.md`.
+  - Статус `[!]`: код и unit-проверки готовы, но live-приёмку блокирует текущая среда: user systemd scope bus отвечает `Operation not permitted`, а cgroup v2 доступен только для чтения. Проверки фактических лимитов и cleanup здесь выполнить нельзя; точные команды и вывод записаны в `QA.md`.
