@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/arwos/isobox/internal/limits"
 	"github.com/arwos/isobox/internal/profile"
 )
 
@@ -152,7 +153,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 			"--cap-add", "CAP_NET_ADMIN",
 		)
 	}
-	if activeBackend != "none" {
+	if activeBackend != "none" || limits.Any(config.Limits) {
 		args = append(args, "--block-fd", "3")
 	}
 	args = append(args,

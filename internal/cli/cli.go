@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/arwos/isobox/internal/limits"
 	"github.com/arwos/isobox/internal/preflight"
 	"github.com/arwos/isobox/internal/profile"
 	"github.com/arwos/isobox/internal/sandbox"
@@ -104,7 +105,9 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 
 	var exitCode int
 	if network.Backend != preflight.BackendNone || network.PortForwarder != preflight.BackendNone {
-		exitCode, err = sandbox.RunWithNetwork(command, network, effectiveProfile.Network.Ports)
+		exitCode, err = sandbox.RunWithNetwork(command, network, effectiveProfile.Network.Ports, effectiveProfile.Limits, capabilities.SystemdRun)
+	} else if limits.Any(effectiveProfile.Limits) {
+		exitCode, err = sandbox.RunWithLimits(command, effectiveProfile.Limits, capabilities.SystemdRun)
 	} else {
 		exitCode, err = sandbox.Run(command)
 	}

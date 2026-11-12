@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/arwos/isobox/internal/limits"
 	"github.com/arwos/isobox/internal/profile"
 )
 
@@ -26,6 +27,7 @@ type Capabilities struct {
 	Slirp4netns          string
 	Slirp4netnsOptions   map[string]bool
 	SlirpInspectionError string
+	SystemdRun           string
 	Network              BackendSelection
 }
 
@@ -107,8 +109,17 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 		}
 	}
 
-	if err := checkRequestedLimits(config.Limits); err != nil {
+	capabilities.SystemdRun, err = limits.CheckHost(config.Limits)
+	if err != nil {
 		issues = append(issues, err.Error())
+	}
+	if limits.Any(config.Limits) && capabilities.Bubblewrap != "" {
+		options, inspectErr := inspectOptions(capabilities.Bubblewrap)
+		if inspectErr != "" {
+			issues = append(issues, fmt.Sprintf("cannot verify bwrap resource-limit startup gate: %s", inspectErr))
+		} else if !hasAllOptions(options, "--block-fd", "--json-status-fd") {
+			issues = append(issues, "installed bwrap lacks the startup-gate or status options required to apply resource limits before the application starts; update bubblewrap and retry")
+		}
 	}
 
 	if len(issues) > 0 {
@@ -184,24 +195,4 @@ func isSandboxSystemPath(path string) bool {
 		}
 	}
 	return false
-}
-
-func checkRequestedLimits(limits profile.ResourceLimits) error {
-	var requested []string
-	if limits.CPUQuotaPercent > 0 {
-		requested = append(requested, "cpu_quota_percent")
-	}
-	if limits.MemoryBytes > 0 {
-		requested = append(requested, "memory_bytes")
-	}
-	if limits.ProcessCount > 0 {
-		requested = append(requested, "process_count")
-	}
-	if limits.OpenFiles > 0 {
-		requested = append(requested, "open_files")
-	}
-	if len(requested) == 0 {
-		return nil
-	}
-	return fmt.Errorf("profile limits (%s) cannot be enforced by this build; remove them or use a build with the F07 limit backend", strings.Join(requested, ", "))
 }

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/arwos/isobox/internal/limits"
 	"github.com/arwos/isobox/internal/profile"
 )
 
@@ -26,7 +27,7 @@ type bwrapStatus struct {
 // shell-compatible exit status. The JSON status FD gives isobox the host PID
 // of the sandboxed command so interactive signals can cross --new-session.
 func Run(command *exec.Cmd) (int, error) {
-	return run(command, nil, nil)
+	return run(command, nil, nil, profile.ResourceLimits{}, "")
 }
 
 // RunWithPasta keeps the legacy off-mode entry point while delegating to the
@@ -37,25 +38,31 @@ func RunWithPasta(command *exec.Cmd, pastaPath string, rules []profile.PortRule)
 		PortForwarder: "pasta",
 		Executable:    pastaPath,
 	}
-	return run(command, &network, append([]profile.PortRule(nil), rules...))
+	return run(command, &network, append([]profile.PortRule(nil), rules...), profile.ResourceLimits{}, "")
+}
+
+// RunWithLimits holds the application behind bwrap's startup gate until all
+// requested limits have been applied and verified.
+func RunWithLimits(command *exec.Cmd, requested profile.ResourceLimits, systemdRun string) (int, error) {
+	return run(command, nil, nil, requested, systemdRun)
 }
 
 // RunWithNetwork holds the application behind bwrap's startup gate until the
-// selected direct-network backend is configured and all declared forwards
-// have been accepted.
-func RunWithNetwork(command *exec.Cmd, network NetworkRuntime, rules []profile.PortRule) (int, error) {
-	return run(command, &network, append([]profile.PortRule(nil), rules...))
+// selected backend and all requested resource limits are ready.
+func RunWithNetwork(command *exec.Cmd, network NetworkRuntime, rules []profile.PortRule, requested profile.ResourceLimits, systemdRun string) (int, error) {
+	return run(command, &network, append([]profile.PortRule(nil), rules...), requested, systemdRun)
 }
 
-func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule) (int, error) {
+func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, requested profile.ResourceLimits, systemdRun string) (int, error) {
 	if command == nil {
 		return 0, fmt.Errorf("bwrap command is required")
 	}
 	if network != nil && network.activeBackend() == "none" {
 		return 0, fmt.Errorf("network supervisor requires a selected backend")
 	}
+	needsGate := network != nil || limits.Any(requested)
 	var gateReader, gateWriter *os.File
-	if network != nil {
+	if needsGate {
 		var err error
 		gateReader, gateWriter, err = os.Pipe()
 		if err != nil {
@@ -88,12 +95,22 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule) (
 	}
 	defer statusReader.Close()
 	command.ExtraFiles = append(command.ExtraFiles, statusWriter)
+	if limits.NeedsCgroup(requested) {
+		command, err = limits.ScopeCommand(command, systemdRun, requested)
+		if err != nil {
+			closeExtraFiles(command.ExtraFiles)
+			if gateWriter != nil {
+				_ = gateWriter.Close()
+			}
+			return 0, err
+		}
+	}
 	if err := command.Start(); err != nil {
 		closeExtraFiles(command.ExtraFiles)
 		if gateWriter != nil {
 			_ = gateWriter.Close()
 		}
-		return 0, fmt.Errorf("start bwrap: %w", err)
+		return 0, fmt.Errorf("start sandbox process: %w", err)
 	}
 	closeExtraFiles(command.ExtraFiles)
 	command.ExtraFiles = nil
@@ -135,21 +152,34 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule) (
 							err = forwarder.configureForwards(rules)
 						}
 					}
+				}
+				if !gateReleased && needsGate {
+					if err == nil {
+						err = limits.VerifyCgroupPID(childPID, requested)
+					}
+					if err == nil {
+						err = limits.ApplyOpenFilesPID(childPID, requested.OpenFiles)
+					}
 					if err != nil {
 						if forwarder != nil {
 							forwarder.stop()
 						}
-						_ = command.Process.Kill()
+						terminateLaunch(command, childPID)
 						_ = gateWriter.Close()
 						<-waitResult
-						return 125, fmt.Errorf("prepare %s network: %w", network.activeBackend(), err)
+						if network != nil {
+							return 125, fmt.Errorf("prepare %s network and profile limits: %w", network.activeBackend(), err)
+						}
+						return 125, fmt.Errorf("apply profile resource limits: %w", err)
 					}
 					if _, err := gateWriter.Write([]byte{1}); err != nil {
-						forwarder.stop()
-						_ = command.Process.Kill()
+						if forwarder != nil {
+							forwarder.stop()
+						}
+						terminateLaunch(command, childPID)
 						_ = gateWriter.Close()
 						<-waitResult
-						return 125, fmt.Errorf("release bwrap after network setup: %w", err)
+						return 125, fmt.Errorf("release bwrap after startup checks: %w", err)
 					}
 					_ = gateWriter.Close()
 					gateReleased = true
@@ -174,7 +204,7 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule) (
 			forwarderDone = nil
 			if gateReleased && !sandboxExitReported {
 				forwardingFailure = fmt.Errorf("%s stopped while the application was running: %v", network.activeBackend(), forwarder.error())
-				_ = command.Process.Kill()
+				terminateLaunch(command, childPID)
 			}
 		case waitErr := <-waitResult:
 			if forwarder != nil {
@@ -188,6 +218,18 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule) (
 			}
 			return processExitCode(waitErr)
 		}
+	}
+}
+
+func terminateLaunch(command *exec.Cmd, childPID int) {
+	if childPID > 0 {
+		if groupID, err := syscall.Getpgid(childPID); err == nil && groupID > 0 {
+			_ = syscall.Kill(-groupID, syscall.SIGKILL)
+		}
+		_ = syscall.Kill(childPID, syscall.SIGKILL)
+	}
+	if command != nil && command.Process != nil {
+		_ = command.Process.Kill()
 	}
 }
 

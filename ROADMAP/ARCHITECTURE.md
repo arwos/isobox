@@ -40,7 +40,7 @@ isobox run --profile=/path/to/profile.unic [--app-id=ID] -- app [args...]
 
 ### Лимиты и интеграция
 
-Профиль может задавать CPU, память, число процессов и открытых файлов. Если применить любой заданный лимит не удалось, приложение не запускается. Механизм выбирается отдельной задачей после проверки доступных rootless/cgroup/systemd возможностей; системная интеграция не обязательна.
+Профиль может задавать CPU, память, число процессов и открытых файлов. CPU, память и процессы ограничиваются через cgroup v2 в пользовательском transient scope `systemd-run`; open files — через `RLIMIT_NOFILE`. Запуск остаётся заблокированным до проверки значений, а недоступный или ослабленный лимит останавливает запуск. `process_count` использует cgroup task limit и включает потоки. Runtime-приёмка F07-T01 остаётся открытой.
 
 Необязательная системная интеграция может предоставить desktop launchers и дополнительные системные значения по умолчанию. Эти значения пользователь может переопределять; они не считаются принудительной административной политикой.
 
@@ -69,7 +69,7 @@ internal/integration/   необязательные desktop/system defaults
 - [RFC 1928](https://www.rfc-editor.org/rfc/rfc1928.html): SOCKS5 включает `CONNECT` и `UDP ASSOCIATE`, но не является IP-шлюзом для ICMP. SOCKS UDP relay может молча отбрасывать неподдерживаемые датаграммы, так что fail-closed означает отсутствие прямого обхода, а не гарантированную немедленную ошибку UDP-приложению.
 - [RFC 1929](https://www.rfc-editor.org/rfc/rfc1929): SOCKS5 username/password передаёт пароль открыто.
 - [sing-box SOCKS inbound](https://sing-box.sagernet.org/configuration/inbound/socks/): выбран только как тестовый SOCKS-сервер в Podman; не runtime-зависимость isobox.
-- [systemd resource-control](https://freedesktop.org/software/systemd/man/latest/systemd.resource-control.html) и [systemd.exec](https://freedesktop.org/software/systemd/man/latest/systemd.exec): документируют cgroup-лимиты CPU/памяти/tasks и rlimit-параметры. Это кандидаты для исследования, но механизм isobox пока не выбран.
+- [systemd-run](https://freedesktop.org/software/systemd/man/latest/systemd-run.html), [systemd resource-control](https://freedesktop.org/software/systemd/man/latest/systemd.resource-control.html) и [systemd.exec](https://freedesktop.org/software/systemd/man/latest/systemd.exec): документируют пользовательские transient scopes, cgroup-лимиты CPU/памяти/tasks и rlimit-параметры, выбранные для F07-T01.
 - [go-unic repository](https://github.com/osspkg/go-unic): используется `go.osspkg.com/unic v1.0.2`; проверка исходников показала, что decoder пропускает неизвестные поля структуры, поэтому isobox выполняет отдельную проверку полей по схеме до `unic.Unmarshal`.
 
 ## Порядок зависимостей
