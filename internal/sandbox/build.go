@@ -94,11 +94,12 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	ipv4Setup := directNetwork || config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) == 0
 	activeBackend := network.activeBackend()
 	args := []string{"--unshare-user"}
-	// Proxy mode must keep its network namespace in the same user namespace
-	// that owns it so the trusted helper retains CAP_NET_ADMIN for IPv6/TUN
-	// setup. The helper installs namespace-blocking seccomp before app exec.
-	// The off-mode guard creates its netns after bwrap mounts: some bwrap
-	// setups enter a nested user namespace while preparing /dev.
+	// Proxy mode creates its network namespace in the trusted helper, after
+	// bwrap has finished its user-namespace setup for --dev/devpts. That keeps
+	// CAP_NET_ADMIN in the user namespace that owns the network namespace.
+	// The helper installs namespace-blocking seccomp before app exec.
+	// The off-mode guard creates its netns after bwrap mounts too, because /dev
+	// setup can change the user namespace that should own the network namespace.
 	if !offGuard && !proxyNetwork {
 		args = append(args, "--disable-userns", "--assert-userns-disabled")
 	}
@@ -109,7 +110,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		"--new-session",
 		"--die-with-parent",
 	)
-	if !offGuard && !ipv4Setup {
+	if !offGuard && !ipv4Setup && !proxyNetwork {
 		args = append(args, "--unshare-net")
 	}
 	for _, mount := range systemMounts {
@@ -209,6 +210,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		}
 		args = append(args,
 			"--ro-bind", binary, internalSandboxBinaryPath,
+			"--cap-add", "CAP_SYS_ADMIN",
 			"--cap-add", "CAP_NET_ADMIN",
 			"--dir", "/dev/net",
 			"--dev-bind", "/dev/net/tun", "/dev/net/tun",

@@ -49,12 +49,20 @@ func RunProxyTUNHelper(args []string) (int, bool) {
 		return 125, true
 	}
 	runtime.LockOSThread()
-	if err := verifyProxyTUNCapabilities(); err != nil {
+	if err := verifyProxyTUNCapabilities(capSetupMask); err != nil {
 		fmt.Fprintf(os.Stderr, "isobox: proxy TUN helper lacks its temporary network capability: %v\n", err)
 		return 125, true
 	}
 	if err := setNoNewPrivs(); err != nil {
 		fmt.Fprintf(os.Stderr, "isobox: cannot set no_new_privs before proxy TUN setup: %v\n", err)
+		return 125, true
+	}
+	if err := unshareNetworkNamespace(); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot create the proxy network namespace: %v\n", err)
+		return 125, true
+	}
+	if err := dropProxySysAdminCapability(); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot drop CAP_SYS_ADMIN after proxy network namespace setup: %v\n", err)
 		return 125, true
 	}
 	if err := disableIPv6InNamespace(); err != nil {
@@ -63,6 +71,10 @@ func RunProxyTUNHelper(args []string) (int, bool) {
 	}
 	if err := verifyNoIPv6Routes(); err != nil {
 		fmt.Fprintf(os.Stderr, "isobox: IPv6 routes remain in the proxy network namespace: %v\n", err)
+		return 125, true
+	}
+	if err := enableProxyLoopback(); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot enable loopback in the proxy network namespace: %v\n", err)
 		return 125, true
 	}
 	tunFile, err := configureProxyTUN()
@@ -201,7 +213,7 @@ func waitForProxyIngressReady(gate net.Conn) error {
 	return gate.SetDeadline(time.Time{})
 }
 
-func verifyProxyTUNCapabilities() error {
+func verifyProxyTUNCapabilities(expected uint64) error {
 	status, err := os.ReadFile("/proc/thread-self/status")
 	if err != nil {
 		return fmt.Errorf("read process capability state: %w", err)
@@ -242,9 +254,44 @@ func verifyProxyTUNCapabilities() error {
 	if err != nil {
 		return fmt.Errorf("parse ambient capabilities: %w", err)
 	}
-	const expected = capNetAdminMask
 	if eff != expected || prm != expected || inh&^expected != 0 || amb&^expected != 0 || amb&^inh != 0 {
-		return fmt.Errorf("expected only CAP_NET_ADMIN for proxy TUN setup, effective=%s permitted=%s inheritable=%s ambient=%s", effective, permitted, inheritable, ambient)
+		return fmt.Errorf("unexpected proxy setup capabilities (expected mask %x): effective=%s permitted=%s inheritable=%s ambient=%s", expected, effective, permitted, inheritable, ambient)
+	}
+	return nil
+}
+
+func dropProxySysAdminCapability() error {
+	if err := clearAmbientCapabilities(); err != nil {
+		return fmt.Errorf("clear ambient capabilities: %w", err)
+	}
+	header := capUserHeader{version: capVersion3}
+	data := [capabilitySetsSize]capUserData{{
+		effective: uint32(capNetAdminMask),
+		permitted: uint32(capNetAdminMask),
+	}}
+	_, _, errno := syscall.RawSyscall(syscall.SYS_CAPSET,
+		uintptr(unsafe.Pointer(&header)),
+		uintptr(unsafe.Pointer(&data[0])),
+		0,
+	)
+	runtime.KeepAlive(&header)
+	runtime.KeepAlive(&data)
+	if errno != 0 {
+		return errno
+	}
+	if err := verifyProxyTUNCapabilities(capNetAdminMask); err != nil {
+		return fmt.Errorf("verify retained CAP_NET_ADMIN: %w", err)
+	}
+	return nil
+}
+
+func enableProxyLoopback() error {
+	loopback, err := netlink.LinkByName("lo")
+	if err != nil {
+		return fmt.Errorf("find loopback interface: %w", err)
+	}
+	if err := netlink.LinkSetUp(loopback); err != nil {
+		return fmt.Errorf("bring loopback interface up: %w", err)
 	}
 	return nil
 }
