@@ -126,7 +126,7 @@ func ValidateProfile(profile Profile) error {
 			return err
 		}
 	}
-	if profile.Network.ProxyAlias != "" && !validAlias(profile.Network.ProxyAlias) {
+	if profile.Network.ProxyAlias != "" && !IsValidProxyAlias(profile.Network.ProxyAlias) {
 		return fmt.Errorf("profile.network.proxy_alias: invalid alias %q; use 1-64 ASCII letters, digits, '.', '_' or '-' and start with a letter or digit", profile.Network.ProxyAlias)
 	}
 	if (profile.Network.Mode == NetworkModeOff || profile.Network.Mode == NetworkModeDirect) && profile.Network.ProxyAlias != "" {
@@ -222,6 +222,10 @@ func validAlias(alias string) bool {
 	}
 	return true
 }
+
+// IsValidProxyAlias reports whether alias follows the profile proxy alias
+// syntax. Proxy storage uses the same contract as profile validation.
+func IsValidProxyAlias(alias string) bool { return validAlias(alias) }
 
 func validateAbsolutePath(field, value string) error {
 	if value == "" {

@@ -136,6 +136,16 @@ func rejectUnknownFields(data []byte, typ reflect.Type, documentName string) err
 	return nil
 }
 
+// ValidateUNICFields checks that a UNIC document uses only fields declared by
+// the supplied struct schema. go-unic intentionally ignores unknown fields,
+// which is unsafe for security-sensitive configuration documents.
+func ValidateUNICFields(data []byte, schema any, documentName string) error {
+	if schema == nil {
+		return fmt.Errorf("%s schema is required", documentName)
+	}
+	return rejectUnknownFields(data, reflect.TypeOf(schema), documentName)
+}
+
 type strictTokenKind uint8
 
 const (

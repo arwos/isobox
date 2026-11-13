@@ -20,6 +20,7 @@ const rootUsage = `Usage:
 
 Commands:
   run          Prepare an isolated application launch
+  proxy        Manage SOCKS5 proxy aliases
   integration  Manage optional user desktop launchers
   help         Show this help
 `
@@ -55,6 +56,8 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "run":
 		return executeRun(args[1:], stdout, stderr)
+	case "proxy":
+		return executeProxy(args[1:], stdout, stderr)
 	case "integration":
 		return executeIntegration(args[1:], stdout, stderr)
 	default:
@@ -92,6 +95,12 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
+	}
+	if effectiveProfile.NetworkMode == profile.NetworkModeProxy {
+		if err := inspectAndWarnProxy(effectiveProfile.Network.ProxyAlias, stderr); err != nil {
+			fmt.Fprintf(stderr, "isobox run: %v\n", err)
+			return 2
+		}
 	}
 	capabilities, err := preflight.Check(effectiveProfile)
 	if err != nil {
