@@ -95,7 +95,8 @@ func startPasta(pastaPath string, namespacePID int, rules []profile.PortRule, mo
 		// installed by the trusted helper sends only marked replies through it.
 		args = append(args,
 			"--ns-ifname=isoboxp0",
-			"--address=10.89.1.2/24",
+			"--address=10.89.1.2",
+			"--netmask=24",
 			"--gateway=10.89.1.1",
 			"--no-splice", "--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra",
 		)

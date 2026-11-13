@@ -61,7 +61,7 @@ func TestNetworkBackendsUseIPv4Only(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read pasta arguments: %v", err)
 		}
-		for _, expected := range []string{"--ns-ifname=isoboxp0", "--address=10.89.1.2/24", "--gateway=10.89.1.1", "--no-splice", "--no-icmp", "--no-udp", "--ipv4-only", "--tcp-ports=127.0.0.1/8123", "--udp-ports=none"} {
+		for _, expected := range []string{"--ns-ifname=isoboxp0", "--address=10.89.1.2", "--netmask=24", "--gateway=10.89.1.1", "--no-splice", "--no-icmp", "--no-udp", "--ipv4-only", "--tcp-ports=127.0.0.1/8123", "--udp-ports=none"} {
 			if !containsLine(string(args), expected) {
 				t.Errorf("pasta arguments %q omit %q", args, expected)
 			}

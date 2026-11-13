@@ -87,7 +87,7 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 			return BackendSelection{}, fmt.Errorf("cannot verify pasta's proxy ingress options: %s", capabilities.PastaInspectionError)
 		}
 		required := offPastaRequiredOptions(config.Network.Ports)
-		required = append(required, "--ns-ifname", "--address", "--gateway")
+		required = append(required, "--ns-ifname", "--address", "--netmask", "--gateway")
 		if !hasAllOptions(capabilities.PastaOptions, required...) {
 			return BackendSelection{}, fmt.Errorf("installed pasta lacks options required for proxy ingress forwarding and egress isolation; update passt and retry")
 		}

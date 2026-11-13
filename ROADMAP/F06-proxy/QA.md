@@ -78,6 +78,10 @@
 
 Для этой итерации после обновления кода выполнены `gofmt -w internal/sandbox/tun_helper_linux.go`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go vet ./...` и `git diff --check` — все завершились успешно; сборка вывела предупреждение GVM о read-only stat cache. Go tests и runtime runner не запускались.
 
+Пользовательский отчёт `/tmp/isobox-test-results/f06-proxy-runtime.UuQLZa/result.txt` на коммите `5fb5899` подтвердил прохождение IPv6-проверки и установки TUN default route. Далее pasta завершился с `Invalid address: 10.89.1.2/24`: у pasta `--address` принимает только IP, а маска задаётся отдельным `--netmask`. Команда обновлена на `--address=10.89.1.2 --netmask=24`; host preflight теперь требует и проверяет `--netmask`, чтобы несовместимая версия не доходила до запуска. Тестовые ожидания аргументов синхронизированы, но тесты не запускались. Отчёт не проверил startup gate или proxy traffic.
+
+После этого исправления выполнены `gofmt -w internal/sandbox/forward_linux.go internal/sandbox/forward_linux_test.go internal/preflight/backend.go internal/preflight/backend_test.go internal/preflight/preflight.go`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go vet ./...` и `git diff --check` — все завершились успешно; сборка вывела предупреждение GVM о read-only stat cache. Go tests и runtime runner не запускались.
+
 ### F06-T04 — sing-box Podman fixture (приёмка пройдена)
 
 - `gofmt -w internal/proxy/podman_fixture_test.go` — успешно.

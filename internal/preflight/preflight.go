@@ -43,7 +43,8 @@ type optionProbe struct {
 // the parser validates the flag without starting a network process.
 var pastaOptionProbes = []optionProbe{
 	{option: "--config-net", args: []string{"--config-net"}},
-	{option: "--address", args: []string{"--address=10.89.1.2/24"}},
+	{option: "--address", args: []string{"--address=10.89.1.2"}},
+	{option: "--netmask", args: []string{"--netmask=24"}},
 	{option: "--gateway", args: []string{"--gateway=10.89.1.1"}},
 	{option: "--udp-ports", args: []string{"--udp-ports=none"}},
 	{option: "--tcp-ns", args: []string{"--tcp-ns=none"}},

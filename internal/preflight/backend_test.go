@@ -249,7 +249,7 @@ func TestSelectBackendProxyPortsRequirePastaAndEgressGuard(t *testing.T) {
 	capabilities := Capabilities{
 		Pasta: "/usr/bin/pasta",
 		PastaOptions: testOptionSet(
-			"--config-net", "--address", "--gateway", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns",
+			"--config-net", "--address", "--netmask", "--gateway", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns",
 			"--ns-ifname", "--no-splice", "--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra",
 			"--ipv4-only", "--pid", "--quiet", "--foreground", "--no-udp",
 		),
