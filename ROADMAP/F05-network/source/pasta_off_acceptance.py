@@ -110,8 +110,19 @@ def host_gateway_probe_app():
                     fields = line.split()
                     if len(fields) >= 6:
                         ipv6_interfaces.add(fields[5])
-        if ipv6_interfaces - {'lo'}:
-            raise SystemExit('off mode configured non-loopback IPv6 interfaces: %r' % sorted(ipv6_interfaces - {'lo'}))
+        if ipv6_interfaces:
+            raise SystemExit('off mode has IPv6 addresses configured: %r' % sorted(ipv6_interfaces))
+        status = {}
+        with open('/proc/self/status', encoding='ascii') as fields:
+            for line in fields:
+                if ':' in line:
+                    name, value = line.split(':', 1)
+                    status[name] = value.strip()
+        for name in ('CapEff', 'CapPrm', 'CapInh', 'CapAmb'):
+            if int(status.get(name, '-1'), 16) != 0:
+                raise SystemExit('%s is not empty after off-mode setup: %s' % (name, status.get(name)))
+        if status.get('NoNewPrivs') != '1':
+            raise SystemExit('no_new_privs is not set in off mode')
         try:
             ipv6_probe = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
         except OSError:
@@ -353,6 +364,7 @@ def main():
             raise RuntimeError(
                 f"sandbox exited {process.returncode}\nstdout:\n{stdout}\nstderr:\n{stderr}"
             )
+        print("PASS off mode has no IPv6 addresses and dropped setup capabilities")
         if "ICMP_BLOCKED_SOCKET" in stdout:
             print("PASS sandbox process could not create an ICMP socket")
         elif "ICMP_BLOCKED_EGRESS" in stdout:

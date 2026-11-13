@@ -1,0 +1,5 @@
+version 1;
+network {
+  mode direct;
+  dns '2001:db8::53';
+}

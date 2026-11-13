@@ -130,8 +130,21 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 		options, inspectErr := inspectOptions(capabilities.Bubblewrap)
 		if inspectErr != "" {
 			issues = append(issues, fmt.Sprintf("cannot verify bwrap direct-network startup options: %s", inspectErr))
-		} else if !hasAllOptions(options, "--block-fd", "--ro-bind-data", "--json-status-fd", "--disable-userns", "--assert-userns-disabled") {
-			issues = append(issues, "installed bwrap lacks the startup-gate or resolver-file options required for direct network mode; update bubblewrap and retry")
+		} else if !hasAllOptions(options, "--ro-bind-data", "--json-status-fd", "--disable-userns", "--assert-userns-disabled", "--cap-add") {
+			issues = append(issues, "installed bwrap lacks the resolver, startup-status, or capability options required for direct IPv4 network mode; update bubblewrap and retry")
+		}
+	}
+	if config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) == 0 && capabilities.Bubblewrap != "" {
+		options, inspectErr := inspectOptions(capabilities.Bubblewrap)
+		if inspectErr != "" {
+			issues = append(issues, fmt.Sprintf("cannot verify bwrap IPv4-only setup options: %s", inspectErr))
+		} else if !hasAllOptions(options, "--cap-add") {
+			issues = append(issues, "installed bwrap lacks the capability option required to disable IPv6 before the application starts; update bubblewrap and retry")
+		}
+	}
+	if config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) != 0 && config.Limits.ProcessCount != 0 {
+		if _, err := exec.LookPath("systemctl"); err != nil {
+			issues = append(issues, "off mode with published ports and process_count requires systemctl to remove the temporary firewall-setup task allowance before application startup; install systemd or remove process_count")
 		}
 	}
 

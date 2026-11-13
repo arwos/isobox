@@ -19,5 +19,8 @@ after accounting for bwrap supervisors; confirms an extra thread is denied;
 and checks transient scope cleanup. It also removes `systemd-run` from `PATH`
 and verifies a requested CPU limit fails closed before the payload starts.
 
-The script uses Python's standard library and writes all profiles, state, and
-markers under a temporary directory. It refuses to run as root.
+When `pasta`, `nft`, and `systemctl` are available in `PATH`, the combined
+profile also publishes an off-mode port and verifies temporary firewall setup
+tasks are removed before the app gate opens. The script uses Python's standard
+library and writes profiles, state, and markers under a temporary directory.
+It refuses to run as root.

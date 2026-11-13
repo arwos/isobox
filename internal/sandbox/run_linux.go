@@ -71,7 +71,11 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 	if network != nil && network.activeBackend() == "none" {
 		return 0, fmt.Errorf("network supervisor requires a selected backend")
 	}
-	lateNetworkNamespace := network != nil && network.Mode == profile.NetworkModeOff && len(rules) != 0
+	lateNetworkNamespace := network != nil && (network.Mode == profile.NetworkModeDirect || network.Mode == profile.NetworkModeOff && len(rules) != 0)
+	bootstrapTaskSlack := uint64(0)
+	if network != nil && network.Mode == profile.NetworkModeOff && len(rules) != 0 {
+		bootstrapTaskSlack = limits.OffGuardBootstrapSlack(requested)
+	}
 	var hostNetworkNamespace uint64
 	if lateNetworkNamespace {
 		var err error
@@ -135,8 +139,20 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 	}
 	defer statusReader.Close()
 	command.ExtraFiles = append(command.ExtraFiles, statusWriter)
+	var scopeUnit string
+	var systemctlPath string
 	if limits.NeedsCgroup(requested) {
-		command, err = limits.ScopeCommand(command, systemdRun, requested)
+		if bootstrapTaskSlack != 0 {
+			systemctlPath, err = exec.LookPath("systemctl")
+			if err != nil {
+				closeExtraFiles(command.ExtraFiles)
+				if gateWriter != nil {
+					_ = gateWriter.Close()
+				}
+				return 125, fmt.Errorf("off mode with published ports and process_count requires systemctl to remove temporary setup task allowance; install systemd or lower/remove process_count: %w", err)
+			}
+		}
+		command, scopeUnit, err = limits.ScopeCommand(command, systemdRun, requested, bootstrapTaskSlack)
 		if err != nil {
 			closeExtraFiles(command.ExtraFiles)
 			if gateWriter != nil {
@@ -183,10 +199,12 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 			}
 			if status.ChildPID > 0 {
 				childPID = status.ChildPID
+				applicationPID := childPID
 				if network != nil && forwarder == nil {
 					networkPID := childPID
 					if lateNetworkNamespace {
 						networkPID, err = offGuardGate.WaitForNamespace(hostNetworkNamespace, childPID)
+						applicationPID = networkPID
 					}
 					if err == nil {
 						forwarder, err = setupNetworkBackendWithFallback(network, networkPID, rules, command.Stdout, command.Stderr, startNetworkBackend)
@@ -197,10 +215,20 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 				}
 				if !gateReleased && needsGate {
 					if err == nil {
-						err = limits.VerifyCgroupPID(childPID, requested)
+						if bootstrapTaskSlack != 0 {
+							err = limits.VerifyCgroupPIDWithBootstrapSlack(childPID, requested, bootstrapTaskSlack)
+						} else {
+							err = limits.VerifyCgroupPID(childPID, requested)
+						}
 					}
 					if err == nil {
-						err = limits.ApplyOpenFilesPID(childPID, requested.OpenFiles)
+						err = limits.ApplyOpenFilesPID(applicationPID, requested.OpenFiles)
+					}
+					if err == nil && bootstrapTaskSlack != 0 {
+						err = limits.ApplyFinalTaskLimit(systemctlPath, scopeUnit, childPID, requested)
+					}
+					if err == nil && bootstrapTaskSlack != 0 {
+						err = limits.VerifyCgroupPID(childPID, requested)
 					}
 					if err != nil {
 						if forwarder != nil {

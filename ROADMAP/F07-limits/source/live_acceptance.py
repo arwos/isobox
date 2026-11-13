@@ -5,21 +5,34 @@ import argparse
 import os
 import pathlib
 import shutil
+import socket
 import subprocess
 import tempfile
 import textwrap
 import time
 
 
-def write_profile(root, limits):
+def write_profile(root, limits, published_port=None):
     root.mkdir(parents=True, exist_ok=True)
     home = root / "sandbox-home"
     home.mkdir(mode=0o700)
     profile = root / "profile.unic"
-    profile.write_text(
-        f"version 1;\nhome_path '{home}';\nlimits {{ {limits} }}\n",
-        encoding="utf-8",
-    )
+    contents = ["version 1;", f"home_path '{home}';"]
+    if published_port is not None:
+        contents.extend(
+            [
+                "network {",
+                "  mode off;",
+                "  port {",
+                "    host_address '127.0.0.1';",
+                f"    port {published_port};",
+                "    protocol tcp;",
+                "  }",
+                "}",
+            ]
+        )
+    contents.append(f"limits {{ {limits} }}")
+    profile.write_text("\n".join(contents) + "\n", encoding="utf-8")
     return profile, home
 
 
@@ -75,10 +88,17 @@ def test_open_files_only(binary, environment, root):
     print("PASS open_files-only profile applies soft and hard RLIMIT_NOFILE")
 
 
-def test_combined_limits(binary, environment, root):
+def test_combined_limits(binary, environment, root, include_off_published_port):
+    published_port = None
+    if include_off_published_port:
+        reservation = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        reservation.bind(("127.0.0.1", 0))
+        published_port = reservation.getsockname()[1]
+        reservation.close()
     profile, home = write_profile(
         root,
         "cpu_quota_percent 50; memory_bytes 268435456; process_count 4; open_files 64;",
+        published_port,
     )
     app = """
         import os, resource, threading, time
@@ -200,6 +220,8 @@ def test_combined_limits(binary, environment, root):
             f"PASS CPUQuota=50%, memory.max={memory}, pids.max={tasks}; "
             "four app tasks allowed, extra task denied, RLIMIT_NOFILE=64/64, scope removed"
         )
+        if published_port is not None:
+            print("PASS off-mode firewall setup task allowance was removed before the app gate opened")
     finally:
         if process.poll() is None:
             process.terminate()
@@ -248,6 +270,11 @@ def main():
         (path_dir / "bwrap").symlink_to(bwrap)
         (path_dir / "systemd-run").symlink_to(systemd_run)
         (bwrap_only / "bwrap").symlink_to(bwrap)
+        off_forwarding_tools = all(shutil.which(tool) for tool in ("pasta", "nft", "systemctl"))
+        for tool in ("pasta", "nft", "systemctl"):
+            tool_path = shutil.which(tool)
+            if tool_path:
+                (path_dir / tool).symlink_to(tool_path)
         host_home = root / "host-home"
         config_home = root / "xdg-config"
         config_dirs = root / "xdg-config-dirs"
@@ -265,7 +292,9 @@ def main():
         )
 
         test_open_files_only(binary, environment, root / "open-files")
-        test_combined_limits(binary, environment, root / "combined")
+        test_combined_limits(binary, environment, root / "combined", off_forwarding_tools)
+        if not off_forwarding_tools:
+            print("SKIP off-mode published-port task-slack check: install pasta, nft, and systemctl")
         test_missing_systemd_fails_closed(binary, environment, bwrap_only, root / "missing-systemd")
         print("resource-limit acceptance completed")
 

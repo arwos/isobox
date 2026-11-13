@@ -1,0 +1,10 @@
+version 1;
+network {
+  mode direct;
+  dns '1.1.1.1';
+  port {
+    host_address '127.0.0.1';
+    port 43123;
+    protocol both;
+  }
+}

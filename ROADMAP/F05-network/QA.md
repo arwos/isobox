@@ -2,22 +2,37 @@
 
 ## Текущий IPv4-only критерий
 
-2026-11-13 пользователь решил полностью отключить IPv6. Предыдущие IPv6-приёмочные проверки, ожидавшие внешнюю IPv6-сеть или `::1` forwarding, заменены. Текущая приёмка требует IPv4-only backend configuration, отсутствия IPv6-интерфейсов кроме loopback и отказа внешним IPv6 TCP/UDP в `off` и `direct` на каждом backend.
+2026-11-13 пользователь решил полностью отключить IPv6. Приложение должно видеть пустой `/proc/net/if_inet6`, включая отсутствие loopback `::1`; IPv6 sysctl в namespace должен быть включён для `all` и `default`; приложение должно стартовать с пустыми effective/permitted/inheritable/ambient capability sets и `NoNewPrivs=1`. Внешний IPv6 TCP/UDP также должен завершаться ошибкой. Ранее проверка только внешнего IPv6 была недостаточна: pasta оставляла link-local адрес.
 
 ## Планируемые сценарии
 
-- `off`: исходящие IPv4 TCP/UDP, DNS и доступ к host/LAN не проходят; IPv6 выключен; объявленный IPv4 host port принимает соединение; ответы разрешены только в его рамках.
+- `off`: исходящие IPv4 TCP/UDP, DNS и доступ к host/LAN не проходят; IPv6 адресов нет; объявленный IPv4 host port принимает соединение; ответы разрешены только в его рамках.
 - `off`: попытки использовать не объявленный host port или соседнее устройство завершаются отказом.
 - `direct`: внешний TCP/UDP работает; проверки доступны только объявленные host bind address и диапазоны.
 - Убедиться, что pasta auto forwarding отключён; приложение не получает не объявленные входящие порты.
 - Сравнить семантику direct mode на pasta/slirp; отказать в fallback при отличии IP/protocol/bind behavior.
 - Проверить занятую host-пару адрес/порт, диапазон с конфликтом и низкий порт без возможности bind: точная ошибка, приложение не стартует.
 - Проверить отсутствие утечки при отключении backend во время запуска.
-- `direct`: внешние IPv4 TCP/UDP и profile DNS работают на pasta и slirp; IPv6 выключен; DNS host-loopback и profile override работают без чтения host `/etc/resolv.conf` приложением.
+- `direct`: внешние IPv4 TCP/UDP и profile DNS работают на pasta и slirp; IPv6 адресов нет; DNS host-loopback и profile override работают без чтения host `/etc/resolv.conf` приложением.
 - Валидация профиля и Settings отклоняет IPv6 DNS и host bind; host IPv6 nameservers не попадают в sandbox resolver.
 - `direct`: TCP-only, UDP-only, both, одиночный порт и диапазон проходят через выбранный backend; host bind address совпадает с профилем; конфликт bind/API отменяет запуск до приложения.
 
 ## Выполнение
+
+- 2026-11-13: причина появления IPv6 link-local адреса в pasta была устранена. `--ipv4-only` отключает обработку IPv6 в pasta, но ядро всё ещё могло автоматически настроить link-local адрес; теперь trusted helper устанавливает namespace-local `default/all.disable_ipv6=1`, проверяет пустой `/proc/net/if_inet6`, сбрасывает capabilities и оставляет `no_new_privs=1` до запуска app. Для direct backend namespace создаётся helper-ом после mounts, затем supervisor подключает pasta/slirp через Unix startup gate.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./...` — прошло после изменений.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go vet ./...` — прошло.
+- `./tests/f05-network/pasta/run.sh --local-only` — прошло: пустой IPv6 interface table, TCP/UDP range, TCP-only, UDP-only, loopback bind и отказ undeclared port.
+- `./tests/f05-network/slirp4netns/run.sh --local-only` — прошло: `off` egress, пустой IPv6 interface table, direct range/single-protocol forwards.
+- `./tests/f05-network/auto-fallback/run.sh --local-only` — прошло: injected pasta failure использовал slirp fallback и сохранил IPv4 port rules.
+- `./tests/f05-network/off-published/run.sh` — прошло: host/Internet TCP, UDP/DNS и ICMP заблокированы; объявленные TCP/UDP порты доступны; не объявленные порты закрыты; IPv6 адресов нет, setup capabilities сброшены.
+- `./tests/f05-network/profile-validation/run.sh` — прошло: IPv6 DNS, IPv6 bind и IPv4-mapped IPv6 bind отклонены до app start.
+- После ограничения Go runtime внутреннего IPv4 helper-а повторно прошли пользовательские runners `pasta/run.sh --local-only`, `slirp4netns/run.sh --local-only`, `auto-fallback/run.sh --local-only`, `off-published/run.sh` и `profile-validation/run.sh`. Результаты сохранены в `/tmp/isobox-test-results/`.
+- Регрессионный `python3 ROADMAP/F07-limits/source/live_acceptance.py /tmp/isobox-test-bin/isobox` прошёл после этой правки: с `off` и опубликованным портом временный setup allowance снят до app gate, итоговые `pids.max=6`/`pids.current=6` оставили четыре app tasks, пятый task запрещён, а `RLIMIT_NOFILE=64/64` сохранился в приложении.
+- `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-ipv4 --backend pasta` — прошло, включая default/profile IPv4 DNS и внешний TCP/UDP.
+- `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-ipv4 --backend slirp` — прошло, включая default/profile IPv4 DNS и внешний TCP/UDP.
+- `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-ipv4 --backend auto --simulate-pasta-failure` — прошло; injected pasta startup failure переключил сессию на slirp до запуска app.
+- Runner-ы сохраняют `result.txt` вместе с kernel/tool metadata в `/tmp/isobox-test-results/<scenario>.*`; сценарии и инструкции находятся в `tests/README.md`.
 
 - 2026-11-13: пользователь решил полностью отключить IPv6. Профильные DNS и host bind проверяются как IPv4; pasta запускается с `--ipv4-only`, slirp4netns без `--enable-ipv6`, host resolver фильтруется до IPv4. Unit-тесты проверяют передаваемые backend флаги и отказ от IPv6 DNS/bind адресов.
 - `gofmt -w internal/preflight/backend.go internal/preflight/backend_test.go internal/preflight/preflight.go internal/profile/decode.go internal/profile/decode_test.go internal/sandbox/build.go internal/sandbox/forward_linux.go internal/sandbox/forward_linux_test.go internal/sandbox/network.go internal/sandbox/network_test.go internal/sandbox/slirp_linux.go` — прошло.
@@ -25,9 +40,7 @@
 - `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go vet ./...` — прошло.
 - `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build -o /tmp/isobox-ipv4 ./cmd/isobox` — прошло; GVM сообщил, что не может записать stat cache в `/home/user/.gvm/.cache`.
 - `git diff --check` и Python AST-разбор `slirp_acceptance.py`, `pasta_off_acceptance.py` — прошли.
-- `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-ipv4 --backend pasta --local-only` — runtime acceptance заблокирована host preflight: bwrap не может создать NETLINK_ROUTE socket (`Operation not permitted`), поэтому приложение не запускалось.
-- `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-ipv4 --backend slirp --local-only` — runtime acceptance заблокирована до запуска приложения: host не разрешил создать AF_INET socket (`EPERM`).
-- Live IPv4/IPv6 isolation и forwarding остаются непроверенными после IPv4-only изменения. Для закрытия F05-T02 повторить acceptance на rootless Linux-хосте, где bwrap может настроить loopback/netlink и тестовый процесс может создавать обычные сокеты.
+- Ранний запуск из ограниченного execution sandbox завершился на `NETLINK_ROUTE`/host socket `EPERM`; тот же runtime acceptance затем прошёл вне sandbox в текущей rootless-сессии. Эти ранние ограничения superseded результатами выше.
 
 - `gofmt -w internal/cli/cli.go internal/preflight/backend.go internal/preflight/preflight.go internal/sandbox/build.go internal/sandbox/forward_linux.go internal/sandbox/network.go internal/sandbox/run_linux.go internal/sandbox/run_other.go internal/sandbox/slirp_linux.go` — прошло.
 - `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — прошло; GVM вывел предупреждение о недоступном stat cache в `/home/user/.gvm/.cache`, на сборку это не повлияло.
@@ -117,7 +130,7 @@
 - Runtime-результат: `PASS sandbox process could not create an ICMP socket`; `PASS off mode blocked host/Internet TCP and external UDP/DNS`; `PASS host TCP/UDP requests reached the announced port and received replies`; `PASS host could not reach the unannounced guest TCP/UDP port`.
 - Ранние неуспешные прогоны выше остаются историей fail-closed поведения до изменения порядка создания namespace; они не описывают текущий результат.
 
-F05-T01 принята. F05-T02 остаётся `[!]`: внешний IPv6 недоступен из-за отсутствия default route, а IPv6 host-bind acceptance не прошла до запуска приложения.
+На этом историческом этапе F05-T01 была принята, а F05-T02 ещё не имела полной приёмки: IPv6 host bind и внешний IPv6 не были проверены. Этот промежуточный статус заменён итоговой IPv4-only приёмкой в начале файла после решения пользователя полностью отключить IPv6.
 
 ## F05-T02: IPv6 host-bind probe
 
@@ -128,7 +141,7 @@ Acceptance harness теперь проверяет объявленный `::1` 
 - Host Python смог создать TCP sockets на `::1` и `::`; `/proc/net/ipv6_route` содержит link-local routes на `tun0` и `wlp3s0`, но не IPv6 default route. Pasta manual описывает автоматический выбор единственного routed interface при отсутствии default route; у этого host несколько таких interface, поэтому harness считает IPv6 network setup недоступным.
 - Первый запуск `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-f05-ipv6 --backend pasta --local-only` прошёл IPv4 range и TCP/UDP single-port проверки, затем IPv6 bind probe завершился до `READY`: pasta вернула `Failed to bind port ... for option '-t ::1/...'`; приложение не запустилось. Этот результат не считается IPv6 forwarding pass.
 - Повторные локальные acceptance прогоны остановились раньше отдельных protocol checks: pasta вернула `Couldn't switch to pasta namespaces: Operation not permitted`, а при auto fallback slirp вернул `setns(CLONE_NEWNET): Operation not permitted`. Payload остался за startup gate.
-- Внешний IPv6 также остаётся непроверенным: default route отсутствует, отдельная попытка connect завершилась `Network is unreachable`. F05-T02 остаётся `[!]`; для закрытия нужны host routes, позволяющие pasta поднять IPv6, успешный `::1` TCP/UDP host bind и внешние IPv6 DNS/TCP/UDP пробы.
+- На этом этапе внешний IPv6 оставался непроверенным: default route отсутствовал, отдельная попытка connect завершилась `Network is unreachable`. Последующее решение пользователя полностью отключить IPv6 заменило эту приёмку: namespace-local sysctl теперь отключает IPv6 целиком, а итоговые проверки подтверждают пустой `/proc/net/if_inet6` и отклонение IPv6 DNS/bind в начале файла.
 
 ## Повторная попытка создать локальную IPv6 acceptance-среду
 

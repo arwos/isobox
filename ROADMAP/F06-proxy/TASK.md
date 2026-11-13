@@ -14,8 +14,8 @@
   - Шаги: поддержать no-auth и username/password, `CONNECT`, `UDP ASSOCIATE`, адреса IPv4/domain; IPv6 address type отклоняется, ошибки handshake/relay и lifecycle ассоциации обрабатываются fail-closed.
   - Приёмка: IPv4 TCP/UDP идут только к указанному SOCKS server; IPv6 TUN packets, ICMP/raw traffic отклоняются; отказ или разрыв прокси не приводит к direct fallback.
 - [ ] F06-T03 — Добавить прозрачный TUN-путь для приложений.
-  - Шаги: получить IPv4 packets от sandbox через TUN; отбрасывать IPv6 packets; преобразовывать TCP/UDP flows в SOCKS5; направлять DNS к общему/profile IPv4 DNS по тому же SOCKS relay; исключить DNS и data-plane обходы; обеспечить cleanup процессов и FD.
-  - Приёмка: приложение не настраивает proxy env и не знает alias/credentials; при TUN/SOCKS UDP недоступности приложение не стартует; после отказа активной сессии трафик не переключается напрямую.
+  - Шаги: получить IPv4 packets от sandbox через TUN; namespace-local IPv6 отключается до запуска приложения, а unexpected IPv6 packets отбрасываются; преобразовывать TCP/UDP flows в SOCKS5; направлять DNS к общему/profile IPv4 DNS по тому же SOCKS relay; исключить DNS и data-plane обходы; обеспечить cleanup процессов и FD.
+  - Приёмка: приложение не настраивает proxy env и не знает alias/credentials; sandbox не имеет IPv6 адресов/маршрутов; при TUN/SOCKS UDP недоступности приложение не стартует; после отказа активной сессии трафик не переключается напрямую.
 - [ ] F06-T04 — Подготовить Podman fixture для тестового sing-box SOCKS5 server.
   - Шаги: локальная конфигурация тестового server для TCP и UDP и тестовых credentials; не добавлять sing-box в runtime зависимости или production installer.
   - Приёмка: fixture запускается локально в Podman и позволяет проверить CONNECT, UDP ASSOCIATE, auth failure и остановку сервера.

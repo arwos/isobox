@@ -21,9 +21,12 @@ python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-live --backen
 Each direct-backend run checks both-protocol range forwarding, separate
 TCP-only and UDP-only single-port rules (including refusal of the other
 protocol), exact loopback host binding, and rejection of an unannounced port.
-Every mode also checks that only loopback may have an IPv6 address and that
-external IPv6 TCP/UDP cannot connect, regardless of host IPv6 routes. Pasta is
-started with `--ipv4-only`; slirp4netns is started without `--enable-ipv6`.
+Every mode checks that no IPv6 address remains, including `::1`, and that
+external IPv6 TCP/UDP cannot connect, regardless of host IPv6 routes. The
+trusted setup helper disables IPv6 in the network namespace, verifies
+`/proc/net/if_inet6` is empty, then drops all capability sets and leaves
+`no_new_privs` enabled before executing the app. Pasta is started with
+`--ipv4-only`; slirp4netns is started without `--enable-ipv6`.
 Profile IPv6 DNS and host bind addresses must fail validation. The default
 slirp run also checks `off` egress isolation and fail-closed startup for `off`
 with ports when pasta is unavailable. Full runs check default and

@@ -108,6 +108,16 @@ func contextWithTimeout() (context.Context, context.CancelFunc) {
 // VerifyCgroupPID confirms the requested values were installed on the bwrap
 // scope and that no ancestor cgroup is stricter than the requested budget.
 func VerifyCgroupPID(pid int, request profile.ResourceLimits) error {
+	return verifyCgroupPID(pid, request, 0)
+}
+
+// VerifyCgroupPIDWithBootstrapSlack verifies a transient task allowance used
+// only while trusted sandbox setup helpers run before the application gate.
+func VerifyCgroupPIDWithBootstrapSlack(pid int, request profile.ResourceLimits, bootstrapTaskSlack uint64) error {
+	return verifyCgroupPID(pid, request, bootstrapTaskSlack)
+}
+
+func verifyCgroupPID(pid int, request profile.ResourceLimits, bootstrapTaskSlack uint64) error {
 	if !NeedsCgroup(request) {
 		return nil
 	}
@@ -130,7 +140,7 @@ func VerifyCgroupPID(pid int, request profile.ResourceLimits) error {
 	if err != nil {
 		return err
 	}
-	properties, err := ScopeProperties(request)
+	properties, err := scopeProperties(request, bootstrapTaskSlack)
 	if err != nil {
 		return err
 	}
@@ -173,10 +183,74 @@ func VerifyCgroupPID(pid int, request profile.ResourceLimits) error {
 			}
 		}
 	}
-	if expectedTasks != 0 && request.ProcessCount != 0 && expectedTasks != request.ProcessCount+bwrapSupervisorTasks {
-		return fmt.Errorf("effective TasksMax=%d does not reserve exactly %d bwrap supervisor tasks for profile process_count=%d", expectedTasks, bwrapSupervisorTasks, request.ProcessCount)
+	if expectedTasks != 0 && request.ProcessCount != 0 && expectedTasks != request.ProcessCount+bwrapSupervisorTasks+bootstrapTaskSlack {
+		return fmt.Errorf("effective TasksMax=%d does not reserve exactly %d bwrap supervisor tasks and %d bootstrap task(s) for profile process_count=%d", expectedTasks, bwrapSupervisorTasks, bootstrapTaskSlack, request.ProcessCount)
 	}
 	return nil
+}
+
+// ApplyFinalTaskLimit removes bootstrap-only task slack from a transient scope
+// and waits until cgroup v2 reports the exact profile budget.
+func ApplyFinalTaskLimit(systemctl, unit string, pid int, request profile.ResourceLimits) error {
+	if request.ProcessCount == 0 {
+		return nil
+	}
+	if systemctl == "" || unit == "" || pid <= 0 {
+		return fmt.Errorf("systemctl, scope unit, and sandbox PID are required to finalize process_count")
+	}
+	properties, err := ScopeProperties(request)
+	if err != nil {
+		return err
+	}
+	var taskProperty string
+	for _, property := range properties {
+		if strings.HasPrefix(property, "TasksMax=") {
+			taskProperty = property
+			break
+		}
+	}
+	if taskProperty == "" {
+		return fmt.Errorf("process_count did not produce a TasksMax property")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cgroupProbeTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, systemctl, "--user", "set-property", "--runtime", unit, taskProperty).CombinedOutput()
+	if ctx.Err() != nil {
+		return fmt.Errorf("systemctl set-property timed out while applying the final process_count limit")
+	}
+	if err != nil {
+		return fmt.Errorf("cannot apply final process_count limit to %s: %w (%s)", unit, err, strings.TrimSpace(string(output)))
+	}
+	mount, err := findCgroup2Mount()
+	if err != nil {
+		return err
+	}
+	cgroupPath, err := processCgroupPath(pid)
+	if err != nil {
+		return err
+	}
+	cgroupDir, err := cgroupDirectory(mount, cgroupPath)
+	if err != nil {
+		return err
+	}
+	want, err := strconv.ParseUint(strings.TrimPrefix(taskProperty, "TasksMax="), 10, 64)
+	if err != nil {
+		return fmt.Errorf("parse final task limit %q: %w", taskProperty, err)
+	}
+	deadline := time.Now().Add(cgroupProbeTimeout)
+	for {
+		current, finite, err := readNumericLimit(cgroupDir, "pids.max")
+		if err == nil && finite && current == want {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return fmt.Errorf("verify final process_count limit: %w", err)
+			}
+			return fmt.Errorf("effective pids.max=%d (finite=%t) after requesting %d", current, finite, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 type rlimit64 struct {

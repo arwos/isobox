@@ -28,8 +28,10 @@ type systemMount struct {
 
 const sandboxHome = "/home/isobox"
 const internalOffGuardCommand = "__isobox_internal_off_guard"
+const internalIPv4NetworkCommand = "__isobox_internal_ipv4_network"
 const internalOffGuardControlDir = "/run/.isobox-control"
 const internalOffGuardGatePath = internalOffGuardControlDir + "/gate.sock"
+const internalSandboxBinaryPath = "/tmp/.isobox-internal"
 
 // BuildCommand creates a bwrap command for the supported portion of the
 // current sandbox profile. Host paths are limited to fixed runtime paths and
@@ -83,6 +85,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 
 	offGuard := config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) != 0
 	directNetwork := config.NetworkMode == profile.NetworkModeDirect
+	ipv4Setup := directNetwork || config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) == 0
 	activeBackend := network.activeBackend()
 	args := []string{"--unshare-user"}
 	// The off-mode guard creates its netns after bwrap mounts: some bwrap
@@ -97,7 +100,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		"--new-session",
 		"--die-with-parent",
 	)
-	if !offGuard {
+	if !offGuard && !ipv4Setup {
 		args = append(args, "--unshare-net")
 	}
 	for _, mount := range systemMounts {
@@ -142,6 +145,26 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	for _, name := range environment {
 		args = append(args, "--setenv", name, gui.environment[name])
 	}
+	if ipv4Setup || offGuard {
+		// Keep the trusted setup helper's Go runtime within the task budget. The
+		// value is removed by the helper before it execs the application.
+		args = append(args, "--setenv", "GOMAXPROCS", "1")
+	}
+	if ipv4Setup {
+		binary, err := os.Executable()
+		if err != nil {
+			return nil, fmt.Errorf("locate isobox executable for IPv4-only setup: %w", err)
+		}
+		binary, err = filepath.EvalSymlinks(binary)
+		if err != nil {
+			return nil, fmt.Errorf("resolve isobox executable for IPv4-only setup: %w", err)
+		}
+		args = append(args,
+			"--ro-bind", binary, internalSandboxBinaryPath,
+			"--cap-add", "CAP_SYS_ADMIN",
+			"--cap-add", "CAP_NET_ADMIN",
+		)
+	}
 	if offGuard {
 		if !filepath.IsAbs(nftPath) {
 			return nil, fmt.Errorf("an absolute nftables executable path is required for published ports")
@@ -155,12 +178,12 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 			return nil, fmt.Errorf("resolve isobox executable for the off-mode firewall helper: %w", err)
 		}
 		args = append(args,
-			"--ro-bind", binary, "/tmp/.isobox-internal",
+			"--ro-bind", binary, internalSandboxBinaryPath,
 			"--cap-add", "CAP_SYS_ADMIN",
 			"--cap-add", "CAP_NET_ADMIN",
 		)
 	}
-	if !offGuard && (activeBackend != "none" || limits.Any(config.Limits)) {
+	if !offGuard && ((!ipv4Setup && activeBackend != "none") || limits.Any(config.Limits)) {
 		args = append(args, "--block-fd", "3")
 	}
 	args = append(args,
@@ -181,7 +204,13 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		if udpPorts == "" {
 			udpPorts = "-"
 		}
-		args = append(args, "/tmp/.isobox-internal", internalOffGuardCommand, nftPath, tcpPorts, udpPorts, "--gate-path", internalOffGuardGatePath, "--")
+		args = append(args, internalSandboxBinaryPath, internalOffGuardCommand, nftPath, tcpPorts, udpPorts, "--gate-path", internalOffGuardGatePath, "--")
+	} else if ipv4Setup {
+		if directNetwork {
+			args = append(args, internalSandboxBinaryPath, internalIPv4NetworkCommand, "--wait-for-network", "--")
+		} else {
+			args = append(args, internalSandboxBinaryPath, internalIPv4NetworkCommand, "--")
+		}
 	}
 	args = append(args, application...)
 

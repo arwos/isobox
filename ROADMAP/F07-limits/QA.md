@@ -26,4 +26,14 @@
   - при отсутствии `systemd-run` запрос CPU лимита завершился до запуска payload.
 - Начальные попытки live-проверки в ограниченной оболочке не имели доступа к user systemd bus (`Operation not permitted`) и cgroup controls (`/sys/fs/cgroup` read-only). Повтор с разрешённым rootless user scope прошёл; эти первоначальные отказы не являются отказом на целевом хосте.
 
+## Регрессионная проверка IPv4 bootstrap helper
+
+- После добавления namespace-local IPv6 helper обычная сборка сначала не проходила профиль `process_count 4`: Go runtime helper исчерпывал `TasksMax=6`, пытаясь создать служебный поток до `exec` приложения.
+- Helper теперь получает `GOMAXPROCS=1` только на время своей настройки и удаляет переменную перед `exec`; приложение сохраняет собственное поведение runtime.
+- `python3 ROADMAP/F07-limits/source/live_acceptance.py /tmp/isobox-test-bin/isobox` — прошло: `pids.max=6`, `pids.current=6` с четырьмя задачами приложения, пятая задача запрещена, остальные CPU/memory/open-files и fail-closed проверки прошли.
+- Проверка выявила, что late network helper исполняет приложение со своего закреплённого host TID; `RLIMIT_NOFILE` теперь применяется к этому TID. Сетевой off-helper также удаляет внутренний `GOMAXPROCS` перед `exec`.
+- При `off` с опубликованным TCP-портом временный `TasksMax` helper-ов был снижен `systemctl set-property` до точного профильного `process_count+2` до release gate. Live-проверка подтвердила `pids.max=6`, `pids.current=6`, запуск четырёх app tasks, отказ пятой задачи и `RLIMIT_NOFILE=64/64`.
+- `python3 ROADMAP/F07-limits/source/live_acceptance.py /tmp/isobox-test-bin/isobox` — полный прогон прошёл: open-files-only, CPU/memory/process/open-files вместе с off published-port firewall setup, запрет лишнего task, fail-closed без `systemd-run` и cleanup scope.
+- Минимальный профиль `process_count=1` с off published port также live-запущен успешно; bootstrap allowance был снят перед запуском `/usr/bin/true`.
+
 Инструкция для повторного запуска — `ROADMAP/F07-limits/source/README.md`.

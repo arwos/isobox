@@ -15,5 +15,8 @@ func main() {
 	if code, handled := sandbox.RunOffGuardHelper(os.Args[1:]); handled {
 		os.Exit(code)
 	}
+	if code, handled := sandbox.RunIPv4NetworkHelper(os.Args[1:]); handled {
+		os.Exit(code)
+	}
 	os.Exit(cli.Execute(os.Args[1:], os.Stdout, os.Stderr))
 }

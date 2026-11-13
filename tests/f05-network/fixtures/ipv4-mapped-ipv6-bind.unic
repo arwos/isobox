@@ -1,0 +1,8 @@
+version 1;
+network {
+  mode off;
+  port {
+    host_address '::ffff:192.0.2.10';
+    port 43123;
+  }
+}

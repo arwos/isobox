@@ -4,6 +4,7 @@ package limits
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -44,6 +45,52 @@ func TestScopePropertiesRejectsProcessCountOverflow(t *testing.T) {
 		_, err := ScopeProperties(profile.ResourceLimits{ProcessCount: count})
 		if err == nil || !strings.Contains(err.Error(), "too large") {
 			t.Fatalf("ScopeProperties(process_count=%d) error = %v, want process-count overflow", count, err)
+		}
+	}
+}
+
+func TestOffGuardBootstrapSlackLeavesExactApplicationBudget(t *testing.T) {
+	tests := []struct {
+		processCount uint64
+		wantSlack    uint64
+	}{
+		{processCount: 0, wantSlack: 0},
+		{processCount: 1, wantSlack: 4},
+		{processCount: 4, wantSlack: 1},
+		{processCount: 5, wantSlack: 0},
+	}
+	for _, test := range tests {
+		request := profile.ResourceLimits{ProcessCount: test.processCount}
+		if got := OffGuardBootstrapSlack(request); got != test.wantSlack {
+			t.Errorf("OffGuardBootstrapSlack(%d) = %d, want %d", test.processCount, got, test.wantSlack)
+		}
+	}
+	properties, err := scopeProperties(profile.ResourceLimits{ProcessCount: 4}, OffGuardBootstrapSlack(profile.ResourceLimits{ProcessCount: 4}))
+	if err != nil || !reflect.DeepEqual(properties, []string{"TasksMax=7"}) {
+		t.Fatalf("bootstrap scope properties = %#v, %v; want temporary TasksMax=7", properties, err)
+	}
+}
+
+func TestScopeCommandSetsUniqueUnitAndBootstrapSlack(t *testing.T) {
+	request := profile.ResourceLimits{ProcessCount: 4}
+	command, unit, err := ScopeCommand(exec.Command("/usr/bin/bwrap"), "/usr/bin/systemd-run", request, 1)
+	if err != nil {
+		t.Fatalf("ScopeCommand() error = %v", err)
+	}
+	if !strings.HasSuffix(unit, ".scope") {
+		t.Fatalf("ScopeCommand() unit = %q, want a scope unit", unit)
+	}
+	want := []string{"--unit=" + unit, "--property=TasksMax=7"}
+	for _, value := range want {
+		found := false
+		for _, arg := range command.Args {
+			if arg == value {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("ScopeCommand() arguments omit %q: %#v", value, command.Args)
 		}
 	}
 }

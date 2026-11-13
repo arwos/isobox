@@ -7,7 +7,7 @@
 - UDP ASSOCIATE для DNS и произвольной UDP datagram; проверка ответа и тихого drop; прокси без UDP не запускает profile.
 - DNS общего настроечного resolver и профильного resolver проходит только через SOCKS; при packet capture на хосте прямого DNS нет.
 - QUIC-like UDP flow проходит SOCKS UDP; TCP/UDP отказ прокси не вызывает direct fallback.
-- ICMP/raw socket отклоняются; sandbox TUN не поднимает IPv6 маршрут.
+- ICMP/raw socket отклоняются; IPv6 отключается namespace-local sysctl до приложения, IPv6 address/route tables пусты, а TUN дополнительно отбрасывает unexpected IPv6 packets.
 - TUN fd закрывается после выхода; аварийный exit proxy process оставляет egress закрытым.
 - Podman sing-box fixture покрывает TCP, UDP, auth и отказ relay; runtime может запускаться без sing-box.
 - Plain SOCKS5 показывает явное предупреждение; файл secrets имеет mode `0600`.

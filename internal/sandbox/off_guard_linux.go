@@ -84,6 +84,10 @@ func RunOffGuardHelper(args []string) (int, bool) {
 		fmt.Fprintf(os.Stderr, "isobox: cannot create the isolated network namespace: %v\n", err)
 		return 125, true
 	}
+	if err := disableIPv6InNamespace(); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot disable IPv6 in the off-mode network namespace: %v\n", err)
+		return 125, true
+	}
 	if err := enableNftCapabilityInheritance(); err != nil {
 		fmt.Fprintf(os.Stderr, "isobox: cannot pass firewall capability to nft: %v\n", err)
 		return 125, true
@@ -126,11 +130,170 @@ func RunOffGuardHelper(args []string) (int, bool) {
 		fmt.Fprintf(os.Stderr, "isobox: startup aborted before the network backend was ready: %v\n", err)
 		return 125, true
 	}
+	if err := os.Unsetenv("GOMAXPROCS"); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot remove the internal Go runtime setting before application launch: %v\n", err)
+		return 125, true
+	}
 	if err := syscall.Exec(program, args[7:], os.Environ()); err != nil {
 		fmt.Fprintf(os.Stderr, "isobox: cannot execute application %q: %v\n", args[7], err)
 		return 126, true
 	}
 	return 0, true
+}
+
+// RunIPv4NetworkHelper disables IPv6 inside the bwrap network namespace,
+// drops the temporary network capability, and replaces itself with the app.
+func RunIPv4NetworkHelper(args []string) (int, bool) {
+	if len(args) == 0 || args[0] != internalIPv4NetworkCommand {
+		return 0, false
+	}
+	applicationIndex := 2
+	waitForNetwork := false
+	if len(args) > 1 && args[1] == "--wait-for-network" {
+		waitForNetwork = true
+		applicationIndex = 3
+	}
+	if len(args) <= applicationIndex || args[applicationIndex-1] != "--" || args[applicationIndex] == "" {
+		fmt.Fprintln(os.Stderr, "isobox: invalid internal IPv4-network helper arguments")
+		return 125, true
+	}
+
+	runtime.LockOSThread()
+	if err := verifyIPv4SetupCapabilities(); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot disable IPv6 in the sandbox: %v\n", err)
+		return 125, true
+	}
+	if err := setNoNewPrivs(); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: set no_new_privs before network setup: %v\n", err)
+		return 125, true
+	}
+	if err := unshareNetworkNamespace(); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot create the isolated network namespace: %v\n", err)
+		return 125, true
+	}
+	if err := disableIPv6InNamespace(); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot disable IPv6 in the sandbox: %v\n", err)
+		return 125, true
+	}
+	if waitForNetwork {
+		gate, err := net.Dial("unix", internalOffGuardGatePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "isobox: cannot connect to the network startup gate: %v\n", err)
+			return 125, true
+		}
+		if _, err := io.WriteString(gate, "ready\n"); err != nil {
+			_ = gate.Close()
+			fmt.Fprintf(os.Stderr, "isobox: cannot announce the isolated network namespace: %v\n", err)
+			return 125, true
+		}
+		if err := waitForStartupGate(gate); err != nil {
+			fmt.Fprintf(os.Stderr, "isobox: network startup was aborted: %v\n", err)
+			return 125, true
+		}
+	}
+	if err := clearAmbientCapabilities(); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot clear temporary network capabilities: %v\n", err)
+		return 125, true
+	}
+	if err := dropCapabilities(); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot drop temporary network capabilities before application launch: %v\n", err)
+		return 125, true
+	}
+	program, err := exec.LookPath(args[applicationIndex])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: application executable %q cannot be found inside the sandbox: %v\n", args[applicationIndex], err)
+		return 127, true
+	}
+	if err := os.Unsetenv("GOMAXPROCS"); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot remove the internal Go runtime setting before application launch: %v\n", err)
+		return 125, true
+	}
+	if err := syscall.Exec(program, args[applicationIndex:], os.Environ()); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot execute application %q: %v\n", args[applicationIndex], err)
+		return 126, true
+	}
+	return 0, true
+}
+
+func verifyIPv4SetupCapabilities() error {
+	status, err := os.ReadFile("/proc/thread-self/status")
+	if err != nil {
+		return fmt.Errorf("read process capability state: %w", err)
+	}
+	var effective, permitted, inheritable, ambient string
+	for _, line := range strings.Split(string(status), "\n") {
+		name, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		switch name {
+		case "CapEff":
+			effective = strings.TrimSpace(value)
+		case "CapPrm":
+			permitted = strings.TrimSpace(value)
+		case "CapInh":
+			inheritable = strings.TrimSpace(value)
+		case "CapAmb":
+			ambient = strings.TrimSpace(value)
+		}
+	}
+	if effective == "" || permitted == "" || inheritable == "" || ambient == "" {
+		return fmt.Errorf("process capability state is incomplete")
+	}
+	eff, err := strconv.ParseUint(effective, 16, 64)
+	if err != nil {
+		return fmt.Errorf("parse effective capabilities: %w", err)
+	}
+	prm, err := strconv.ParseUint(permitted, 16, 64)
+	if err != nil {
+		return fmt.Errorf("parse permitted capabilities: %w", err)
+	}
+	inh, err := strconv.ParseUint(inheritable, 16, 64)
+	if err != nil {
+		return fmt.Errorf("parse inheritable capabilities: %w", err)
+	}
+	amb, err := strconv.ParseUint(ambient, 16, 64)
+	if err != nil {
+		return fmt.Errorf("parse ambient capabilities: %w", err)
+	}
+	if eff != capSetupMask || prm != capSetupMask || inh&^capSetupMask != 0 || amb&^capSetupMask != 0 || amb&^inh != 0 {
+		return fmt.Errorf("expected only CAP_SYS_ADMIN and CAP_NET_ADMIN for IPv6 setup, effective=%s permitted=%s inheritable=%s ambient=%s", effective, permitted, inheritable, ambient)
+	}
+	return nil
+}
+
+func disableIPv6InNamespace() error {
+	for _, path := range []string{
+		"/proc/sys/net/ipv6/conf/default/disable_ipv6",
+		"/proc/sys/net/ipv6/conf/all/disable_ipv6",
+	} {
+		file, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			return fmt.Errorf("open %s: %w", path, err)
+		}
+		if _, err := io.WriteString(file, "1\n"); err != nil {
+			_ = file.Close()
+			return fmt.Errorf("write %s: %w", path, err)
+		}
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("close %s: %w", path, err)
+		}
+		value, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("verify %s: %w", path, err)
+		}
+		if strings.TrimSpace(string(value)) != "1" {
+			return fmt.Errorf("%s remained %q after setting it to 1", path, strings.TrimSpace(string(value)))
+		}
+	}
+	addresses, err := os.ReadFile("/proc/net/if_inet6")
+	if err != nil {
+		return fmt.Errorf("verify IPv6 interface addresses: %w", err)
+	}
+	if strings.TrimSpace(string(addresses)) != "" {
+		return fmt.Errorf("IPv6 addresses remain after disabling IPv6: %s", strings.TrimSpace(string(addresses)))
+	}
+	return nil
 }
 
 func verifyGuardCapabilities() error {

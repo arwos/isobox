@@ -176,9 +176,19 @@ def test_ipv6_disabled(binary, environment, root, mode, expect_fallback=False):
         entries = pathlib.Path('/proc/net/if_inet6')
         if entries.exists():
             interfaces = {line.split()[5] for line in entries.read_text().splitlines() if len(line.split()) >= 6}
-            unexpected = interfaces - {'lo'}
-            if unexpected:
-                raise SystemExit('IPv6 interfaces are configured in the sandbox: %r' % sorted(unexpected))
+            if interfaces:
+                raise SystemExit('IPv6 addresses remain in the sandbox: %r' % sorted(interfaces))
+
+        status = {}
+        for line in pathlib.Path('/proc/self/status').read_text().splitlines():
+            if ':' in line:
+                name, value = line.split(':', 1)
+                status[name] = value.strip()
+        for name in ('CapEff', 'CapPrm', 'CapInh', 'CapAmb'):
+            if int(status.get(name, '-1'), 16) != 0:
+                raise SystemExit('%s is not empty after network setup: %s' % (name, status.get(name)))
+        if status.get('NoNewPrivs') != '1':
+            raise SystemExit('no_new_privs is not set for the application')
 
         try:
             tcp = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
@@ -211,15 +221,15 @@ def test_ipv6_disabled(binary, environment, root, mode, expect_fallback=False):
                     raise SystemExit('IPv6 UDP/DNS received an external response')
             finally:
                 udp.close()
-        print('IPv6 interface and external traffic disabled')
+        print('IPv6 addresses, setup capabilities, and external traffic disabled')
     """
     stdout, stderr = run_isobox(binary, profile, environment, app, timeout=20)
-    if "IPv6 interface and external traffic disabled" not in stdout:
+    if "IPv6 addresses, setup capabilities, and external traffic disabled" not in stdout:
         raise RuntimeError(f"{mode} IPv6 probe did not report success: {stdout!r}")
     fallback_used = "trying compatible slirp4netns fallback" in stderr
     if expect_fallback and not fallback_used:
         raise RuntimeError(f"pasta failure did not report the validated slirp fallback:\n{stderr}")
-    print(f"PASS {mode} mode has no non-loopback IPv6 interface or external IPv6 traffic")
+    print(f"PASS {mode} has no IPv6 addresses, dropped setup capabilities, and blocked external IPv6")
 
 
 def test_off_ports_fail_closed(binary, environment, root):
