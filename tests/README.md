@@ -20,6 +20,7 @@
 
 ## Bwrap mounts и HOME
 
+- `./tests/run.sh f04-base-runtime` — проверяет изоляцию root и системных путей, `/proc`/`/dev`/tmpfs, очистку окружения, точные argv и exit status, пересылку SIGTERM и fail-closed при ошибке обязательного `/usr` bind.
 - `./tests/run.sh f04-mount-home` — проверяет явные read-only/writable mounts, точный сохраняемый `home_path`, разделение управляемого HOME по профилю и `--app-id`, режим `0700` и fail-closed отказ для недоступного mount.
 - Нужны Go, Python 3, `bwrap`, пользовательские namespaces и настоящий `/tmp` со sticky bit. Запускайте от обычного пользователя, не через `sudo`.
 

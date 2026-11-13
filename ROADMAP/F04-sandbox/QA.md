@@ -36,6 +36,12 @@
 - F04-T02: `git diff --check` — без замечаний.
 - F04-T02: runtime runner не запускался в этой среде; приёмка bwrap mounts/HOME ожидает отчёт с целевого пользовательского хоста.
 
+- F04-T01: подготовлен runtime acceptance runner `./tests/run.sh f04-base-runtime`; он проверяет root/runtime paths, очищенное environment, read-only system mounts, argv/exit status, SIGTERM forwarding и fail-closed на симулированной ошибке обязательного `/usr` bind.
+- F04-T01: `bash -n tests/f04-sandbox/base-runtime/run.sh tests/run.sh` — успешно.
+- F04-T01: `python3 -c 'import ast; ast.parse(open("tests/f04-sandbox/base-runtime/probe.py", encoding="utf-8").read())'` — успешно.
+- F04-T01: `git diff --check` — без замечаний.
+- F04-T01: runtime runner не запускался в этой среде; live-приёмка базового bwrap root и lifecycle ожидает отчёт с целевого пользовательского хоста.
+
 Не проверялось:
 
 - `isobox run` не запускался, поэтому реальное чтение файлов из root, передача сигналов и коды exit status не проверены в runtime.
