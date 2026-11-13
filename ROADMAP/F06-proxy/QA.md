@@ -68,6 +68,8 @@
 
 В этой итерации `gofmt -w internal/sandbox/build.go internal/sandbox/build_test.go internal/sandbox/tun_helper_linux.go internal/preflight/preflight.go` завершился успешно; `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` и аналогичный `go vet ./...` завершились с exit 0; GVM вывел предупреждение о read-only stat cache; `git diff --check` прошёл. Go tests и runtime runner в этой итерации не запускались. Новый runtime-отчёт: `/tmp/isobox-test-results/f06-proxy-runtime.1hUOS7/result.txt`.
 
+Пользовательский отчёт `/tmp/isobox-test-results/f06-proxy-runtime.A3k7cc/result.txt` выполнен на коммите `efe7b6c`: helper больше не получил ошибку записи IPv6 sysctl, но остановился на `IPv6 route table is not empty` до настройки TUN. Поэтому проверка IPv6-адресов/sysctl прошла, однако TUN, SOCKS TCP/UDP, DNS и published ingress не проверены. `verifyNoIPv6Routes` дополнен ограниченной диагностикой первых 8 записей; следующий runtime-отчёт нужен, чтобы установить, какой маршрут остаётся в новом netns. До этого результат остаётся fail-closed и F06-T03 `[~]`.
+
 ### F06-T04 — sing-box Podman fixture (приёмка пройдена)
 
 - `gofmt -w internal/proxy/podman_fixture_test.go` — успешно.

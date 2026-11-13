@@ -383,7 +383,20 @@ func verifyNoIPv6Routes() error {
 		return fmt.Errorf("read IPv6 route table: %w", err)
 	}
 	if strings.TrimSpace(string(routes)) != "" {
-		return fmt.Errorf("IPv6 route table is not empty")
+		entries := strings.Split(strings.TrimSpace(string(routes)), "\n")
+		const maxDiagnosticEntries = 8
+		shownEntries := entries
+		if len(shownEntries) > maxDiagnosticEntries {
+			shownEntries = shownEntries[:maxDiagnosticEntries]
+		}
+		details := strings.Join(shownEntries, "; ")
+		if len(details) > 2048 {
+			details = details[:2048] + "..."
+		}
+		if len(entries) > len(shownEntries) {
+			details += fmt.Sprintf("; ... (%d more entries)", len(entries)-len(shownEntries))
+		}
+		return fmt.Errorf("IPv6 route table is not empty (%d entries): %s", len(entries), details)
 	}
 	return nil
 }
