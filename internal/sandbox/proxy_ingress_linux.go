@@ -148,8 +148,11 @@ func configureProxyIngressRouting() error {
 		return fmt.Errorf("install pasta subnet in the ingress policy table: %w", err)
 	}
 	if err := netlink.RouteReplace(&netlink.Route{
+		Dst: &net.IPNet{
+			IP:   net.IPv4zero,
+			Mask: net.CIDRMask(0, 32),
+		},
 		LinkIndex: ingress.Attrs().Index,
-		Dst:       nil,
 		Gw:        net.ParseIP(proxyIngressGateway).To4(),
 		Table:     proxyIngressTable,
 		Family:    netlink.FAMILY_V4,
@@ -197,6 +200,7 @@ func verifyProxyIngressPolicy(tun, ingress netlink.Link) error {
 		return fmt.Errorf("verify pasta policy routes: %w", err)
 	}
 	hasSubnet, hasDefault := false, false
+	expectedGateway := net.ParseIP(proxyIngressGateway).To4()
 	for _, route := range routes {
 		if route.LinkIndex != ingress.Attrs().Index {
 			return fmt.Errorf("pasta policy table contains a route through an unexpected interface")
@@ -204,12 +208,12 @@ func verifyProxyIngressPolicy(tun, ingress netlink.Link) error {
 		if route.Dst != nil && route.Dst.String() == proxyIngressSubnet {
 			hasSubnet = true
 		}
-		if route.Dst == nil && route.Gw != nil && route.Gw.Equal(net.ParseIP(proxyIngressGateway)) {
+		if isIPv4DefaultRoute(route) && route.Gw.To4() != nil && route.Gw.To4().Equal(expectedGateway) {
 			hasDefault = true
 		}
 	}
 	if !hasSubnet || !hasDefault {
-		return fmt.Errorf("pasta policy table does not contain the expected connected and default routes")
+		return fmt.Errorf("pasta policy table lacks expected connected/default routes (subnet=%t default=%t routes=%v)", hasSubnet, hasDefault, routes)
 	}
 	rules, err := netlink.RuleList(netlink.FAMILY_V4)
 	if err != nil {

@@ -90,6 +90,10 @@
 
 После исправления выполнены `gofmt -w internal/sandbox/proxy_ingress_linux.go`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go vet ./...` и `git diff --check` — все завершились успешно; сборка вывела предупреждение GVM о read-only stat cache. Go tests и runtime runner не запускались.
 
+Пользовательский отчёт `/tmp/isobox-test-results/f06-proxy-runtime.Fonl5A/result.txt` на `fa2f8f0` подтвердил pasta readiness и прохождение до проверки ingress policy table. Helper отказал с `pasta policy table does not contain the expected connected and default routes`; проверка принимала default route только с nil destination, тогда как netlink может вернуть явный `0.0.0.0/0`. Default route теперь устанавливается с явным IPv4 zero-prefix, а проверка распознаёт обе формы; если проверка всё ещё не пройдёт, ошибка включает фактические маршруты policy table. Приложение осталось заблокированным; startup gate release, SOCKS traffic и ingress forwarding не подтверждены.
+
+После исправления выполнены `gofmt -w internal/sandbox/proxy_ingress_linux.go`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go vet ./...` и `git diff --check` — все завершились успешно; сборка вывела предупреждение GVM о read-only stat cache. Go tests и runtime runner не запускались.
+
 ### F06-T04 — sing-box Podman fixture (приёмка пройдена)
 
 - `gofmt -w internal/proxy/podman_fixture_test.go` — успешно.
