@@ -69,8 +69,8 @@ func RunProxyTUNHelper(args []string) (int, bool) {
 		fmt.Fprintf(os.Stderr, "isobox: cannot disable IPv6 in the proxy network namespace: %v\n", err)
 		return 125, true
 	}
-	if err := verifyNoIPv6Routes(); err != nil {
-		fmt.Fprintf(os.Stderr, "isobox: IPv6 routes remain in the proxy network namespace: %v\n", err)
+	if err := verifyNoIPv6EgressRoutes(); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: unexpected IPv6 routes remain in the proxy network namespace: %v\n", err)
 		return 125, true
 	}
 	if err := enableProxyLoopback(); err != nil {
@@ -377,28 +377,67 @@ func configureProxyTUN() (*os.File, error) {
 	return device, nil
 }
 
-func verifyNoIPv6Routes() error {
+func verifyNoIPv6EgressRoutes() error {
 	routes, err := os.ReadFile("/proc/net/ipv6_route")
 	if err != nil {
 		return fmt.Errorf("read IPv6 route table: %w", err)
 	}
-	if strings.TrimSpace(string(routes)) != "" {
-		entries := strings.Split(strings.TrimSpace(string(routes)), "\n")
-		const maxDiagnosticEntries = 8
-		shownEntries := entries
-		if len(shownEntries) > maxDiagnosticEntries {
-			shownEntries = shownEntries[:maxDiagnosticEntries]
-		}
-		details := strings.Join(shownEntries, "; ")
-		if len(details) > 2048 {
-			details = details[:2048] + "..."
-		}
-		if len(entries) > len(shownEntries) {
-			details += fmt.Sprintf("; ... (%d more entries)", len(entries)-len(shownEntries))
-		}
-		return fmt.Errorf("IPv6 route table is not empty (%d entries): %s", len(entries), details)
+	contents := strings.TrimSpace(string(routes))
+	if contents == "" {
+		return nil
 	}
-	return nil
+
+	var unexpected []string
+	for _, entry := range strings.Split(contents, "\n") {
+		fields := strings.Fields(entry)
+		if !isKernelIPv6NullDiscardRoute(fields) {
+			unexpected = append(unexpected, entry)
+		}
+	}
+	if len(unexpected) == 0 {
+		return nil
+	}
+
+	const maxDiagnosticEntries = 8
+	shownEntries := unexpected
+	if len(shownEntries) > maxDiagnosticEntries {
+		shownEntries = shownEntries[:maxDiagnosticEntries]
+	}
+	details := strings.Join(shownEntries, "; ")
+	if len(details) > 2048 {
+		details = details[:2048] + "..."
+	}
+	if len(unexpected) > len(shownEntries) {
+		details += fmt.Sprintf("; ... (%d more entries)", len(unexpected)-len(shownEntries))
+	}
+	return fmt.Errorf("IPv6 route table contains %d unexpected route(s): %s", len(unexpected), details)
+}
+
+func isKernelIPv6NullDiscardRoute(fields []string) bool {
+	// Linux keeps the FIB's default null entry in /proc/net/ipv6_route even
+	// after IPv6 is disabled. The kernel defines it with RTF_REJECT and
+	// RTF_NONEXTHOP, an unreachable type, and a discard output handler.
+	// Accept only that zero-prefix, no-next-hop, loopback entry. Reference and
+	// use counters vary independently and do not affect the route semantics.
+	if len(fields) != 10 {
+		return false
+	}
+	const (
+		zeroAddress  = "00000000000000000000000000000000"
+		nullRouteFlg = "00200200" // RTF_REJECT | RTF_NONEXTHOP
+	)
+	if fields[0] != zeroAddress || fields[1] != "00" ||
+		fields[2] != zeroAddress || fields[3] != "00" ||
+		fields[4] != zeroAddress || fields[5] != "ffffffff" ||
+		fields[8] != nullRouteFlg || fields[9] != "lo" {
+		return false
+	}
+	for _, counter := range fields[6:8] {
+		if _, err := strconv.ParseUint(counter, 16, 32); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func sendProxyTUNDescriptor(gate *net.UnixConn, device *os.File) error {

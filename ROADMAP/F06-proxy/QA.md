@@ -7,7 +7,7 @@
 - UDP ASSOCIATE для DNS и произвольной UDP datagram; проверка ответа и тихого drop; прокси без UDP не запускает profile.
 - DNS общего настроечного resolver и профильного resolver проходит только через SOCKS; при packet capture на хосте прямого DNS нет.
 - QUIC-like UDP flow проходит SOCKS UDP; TCP/UDP отказ прокси не вызывает direct fallback.
-- ICMP/raw socket отклоняются; IPv6 отключается namespace-local sysctl до приложения, IPv6 address/route tables пусты, а TUN дополнительно отбрасывает unexpected IPv6 packets.
+- ICMP/raw socket отклоняются; IPv6 отключается namespace-local sysctl до приложения, IPv6 адресов и рабочих маршрутов нет; допускается только точная kernel null-discard запись, а TUN дополнительно отбрасывает unexpected IPv6 packets.
 - TUN fd закрывается после выхода; аварийный exit proxy process оставляет egress закрытым.
 - Podman sing-box fixture покрывает TCP, UDP, auth и отказ relay; runtime может запускаться без sing-box.
 - Plain SOCKS5 показывает явное предупреждение; файл secrets имеет mode `0600`.
@@ -68,7 +68,11 @@
 
 В этой итерации `gofmt -w internal/sandbox/build.go internal/sandbox/build_test.go internal/sandbox/tun_helper_linux.go internal/preflight/preflight.go` завершился успешно; `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` и аналогичный `go vet ./...` завершились с exit 0; GVM вывел предупреждение о read-only stat cache; `git diff --check` прошёл. Go tests и runtime runner в этой итерации не запускались. Новый runtime-отчёт: `/tmp/isobox-test-results/f06-proxy-runtime.1hUOS7/result.txt`.
 
-Пользовательский отчёт `/tmp/isobox-test-results/f06-proxy-runtime.A3k7cc/result.txt` выполнен на коммите `efe7b6c`: helper больше не получил ошибку записи IPv6 sysctl, но остановился на `IPv6 route table is not empty` до настройки TUN. Поэтому проверка IPv6-адресов/sysctl прошла, однако TUN, SOCKS TCP/UDP, DNS и published ingress не проверены. `verifyNoIPv6Routes` дополнен ограниченной диагностикой первых 8 записей; следующий runtime-отчёт нужен, чтобы установить, какой маршрут остаётся в новом netns. До этого результат остаётся fail-closed и F06-T03 `[~]`.
+Пользовательский отчёт `/tmp/isobox-test-results/f06-proxy-runtime.A3k7cc/result.txt` выполнен на коммите `efe7b6c`: helper применил IPv6 sysctl, но остановился до настройки TUN на непустой `/proc/net/ipv6_route`.
+
+Отчёт `/tmp/isobox-test-results/f06-proxy-runtime.E4RvCn/result.txt` на `acda71e` показал две одинаковые строки маршрутов: `::/0`, нулевые source и next hop, метрика `ffffffff`, flags `00200200`, устройство `lo`. В Linux v6.12 эти поля соответствуют kernel null route с `RTF_REJECT | RTF_NONEXTHOP`, типом unreachable и discard output; это внутренняя запись сброса пакетов, не маршрут наружу ([исходник ядра](https://github.com/torvalds/linux/blob/v6.12/net/ipv6/route.c)). Проверка `verifyNoIPv6EgressRoutes` теперь пропускает только эту точную форму записи и блокирует любые другие IPv6-маршруты. Предыдущий runtime-прогон был остановлен именно на ложном отказе этой проверки; он не проверил TUN, SOCKS TCP/UDP, DNS, negative egress capture или published ingress. Нужен новый прогон `./tests/f06-proxy/runtime/run.sh`; до него F06-T03 остаётся `[~]`.
+
+После исправления выполнены `gofmt -w internal/sandbox/tun_helper_linux.go`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go vet ./...` и `git diff --check` — все завершились успешно; `go build` напечатал предупреждение GVM о read-only stat cache. Go tests и runtime runner в этой итерации не запускались.
 
 ### F06-T04 — sing-box Podman fixture (приёмка пройдена)
 
