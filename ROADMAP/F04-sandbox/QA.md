@@ -42,6 +42,12 @@
 - F04-T01: `git diff --check` — без замечаний.
 - F04-T01: runtime runner не запускался в этой среде; live-приёмка базового bwrap root и lifecycle ожидает отчёт с целевого пользовательского хоста.
 
+- F04-T03: подготовлен runtime acceptance runner `./tests/run.sh f04-gui-grants`; он проверяет default-deny, независимые Wayland/X11/PipeWire/PulseAudio/GPU/session-bus grants, отсутствие system bus и отказ до app marker для невалидных/недоступных ресурсов.
+- F04-T03: `bash -n tests/f04-sandbox/gui-grants/run.sh tests/run.sh` — успешно.
+- F04-T03: `python3 -c 'import ast; ast.parse(open("tests/f04-sandbox/gui-grants/probe.py", encoding="utf-8").read()); ast.parse(open("tests/f04-sandbox/gui-grants/fake_socket_server.py", encoding="utf-8").read())'` — успешно.
+- F04-T03: `git diff --check` — без замечаний.
+- F04-T03: runtime runner не запускался в этой среде; проверка сокетов/devices в реальном bwrap остаётся пользовательской live-приёмкой.
+
 Не проверялось:
 
 - `isobox run` не запускался, поэтому реальное чтение файлов из root, передача сигналов и коды exit status не проверены в runtime.

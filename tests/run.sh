@@ -11,6 +11,7 @@ Scenarios:
   host-info                 Collect host diagnostics only
   host-smoke                Build isobox and run /usr/bin/true with networking off
   f04-base-runtime          Check the minimal bwrap root and process lifecycle
+  f04-gui-grants            Check isolated GUI permission grants
   f04-mount-home            Check explicit mounts and persistent HOME
   profile-validation        Validate the checked-in UNIC network profiles
   pasta                     Run the pasta network acceptance scenario
@@ -55,6 +56,9 @@ case "$scenario" in
         ;;
     f04-base-runtime)
         script=tests/f04-sandbox/base-runtime/run.sh
+        ;;
+    f04-gui-grants)
+        script=tests/f04-sandbox/gui-grants/run.sh
         ;;
     f04-mount-home)
         script=tests/f04-sandbox/run.sh
