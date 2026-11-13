@@ -94,6 +94,10 @@
 
 После исправления выполнены `gofmt -w internal/sandbox/proxy_ingress_linux.go`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go vet ./...` и `git diff --check` — все завершились успешно; сборка вывела предупреждение GVM о read-only stat cache. Go tests и runtime runner не запускались.
 
+Пользовательский отчёт `/tmp/isobox-test-results/f06-proxy-runtime.i02KOm/result.txt` на `3459a90` прошёл startup gate, передал управление приложению и выполнил DNS-запрос через SOCKS server к настроенному resolver. `getaddrinfo` вернул `EAI_NODATA` (`-5`), но probe принимал только `EAI_NONAME` и завершился до TCP, UDP и опубликованного ingress checks. Probe теперь принимает оба отрицательных DNS результата и отдельно отклоняет успешное разрешение зарезервированного `.invalid` имени. В этом отчёте TCP/UDP echo и ingress forwarding не подтверждены.
+
+Для обновления probe выполнена статическая проверка Python AST через `python3 -c 'import ast; ast.parse(open("tests/f06-proxy/runtime/probe_app.py", encoding="utf-8").read())'`, а также `git diff --check`; обе завершились успешно. Runtime runner и Go tests не запускались.
+
 ### F06-T04 — sing-box Podman fixture (приёмка пройдена)
 
 - `gofmt -w internal/proxy/podman_fixture_test.go` — успешно.

@@ -8,11 +8,17 @@ tcp_echo_port = int(sys.argv[2])
 udp_echo_port = int(sys.argv[3])
 listen_port = int(sys.argv[4])
 
+expected_negative_dns_errors = {socket.EAI_NONAME}
+if hasattr(socket, "EAI_NODATA"):
+    expected_negative_dns_errors.add(socket.EAI_NODATA)
+
 try:
     socket.getaddrinfo("isobox-runtime-check.invalid.", 80, socket.AF_INET, socket.SOCK_STREAM)
 except socket.gaierror as error:
-    if error.errno != socket.EAI_NONAME:
+    if error.errno not in expected_negative_dns_errors:
         raise
+else:
+    raise RuntimeError("reserved .invalid name unexpectedly resolved")
 print("DNS_QUERY_OK", flush=True)
 
 with socket.create_connection((host_address, tcp_echo_port), timeout=8) as tcp:
