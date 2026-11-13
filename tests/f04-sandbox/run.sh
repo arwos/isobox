@@ -31,8 +31,36 @@ report="$result_dir/result.txt"
 events="$result_dir/events.log"
 build_log="$result_dir/build.log"
 active_log=
+managed_home_paths=()
+
+managed_home_for() {
+    python3 - "$1" "$2" <<'PY'
+import hashlib
+import os
+import sys
+profile = os.path.realpath(sys.argv[1])
+print(f"/tmp/isobox-{os.geteuid()}/{hashlib.sha256(profile.encode() + bytes([0]) + sys.argv[2].encode()).hexdigest()}")
+PY
+}
+
+remove_managed_homes() {
+    if ((${#managed_home_paths[@]} == 0)); then
+        return 0
+    fi
+    local path
+    local expected_root="/tmp/isobox-$EUID/"
+    local digest
+    for path in "${managed_home_paths[@]}"; do
+        [[ "$path" == "$expected_root"* ]] || return 1
+        digest=${path#"$expected_root"}
+        [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+        rm -rf -- "$path" || return 1
+        [[ ! -e "$path" && ! -L "$path" ]] || return 1
+    done
+}
 
 cleanup() {
+    remove_managed_homes || true
     rm -rf -- "$runtime_dir"
 }
 trap cleanup EXIT
@@ -115,6 +143,11 @@ network {
 EOF
 managed_other_profile="$runtime_dir/managed-other-profile.unic"
 cp -- "$managed_profile" "$managed_other_profile"
+managed_home_paths=(
+    "$(managed_home_for "$managed_profile" managed-a)"
+    "$(managed_home_for "$managed_profile" managed-b)"
+    "$(managed_home_for "$managed_other_profile" managed-a)"
+)
 
 run_probe() {
     local name=$1
@@ -155,14 +188,7 @@ verify_managed_home() {
     local profile=$1
     local app_id=$2
     local path
-    path=$(python3 - "$profile" "$app_id" <<'PY'
-import hashlib
-import os
-import sys
-profile = os.path.realpath(sys.argv[1])
-print(f"/tmp/isobox-{os.geteuid()}/{hashlib.sha256(profile.encode() + bytes([0]) + sys.argv[2].encode()).hexdigest()}")
-PY
-)
+    path=$(managed_home_for "$profile" "$app_id")
     python3 - "$path" <<'PY' || return 1
 import os
 import stat
@@ -215,6 +241,11 @@ fi
 printf 'PASS unsupported mount blocked app before launch\n' | tee -a "$events" "$report"
 cat -- "$missing_log" | tee -a "$report"
 active_log=
+
+if ! remove_managed_homes; then
+    fail "temporary managed HOME fixtures were not removed"
+fi
+printf 'PASS temporary managed HOME fixtures cleaned\n' | tee -a "$events" "$report"
 
 printf 'runtime_acceptance=passed\nresult_dir=%s\n' "$result_dir" | tee -a "$report"
 printf 'result_dir=%s\n' "$result_dir"

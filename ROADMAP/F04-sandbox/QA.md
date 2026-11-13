@@ -35,6 +35,7 @@
 - F04-T02: `python3 -c 'import ast; ast.parse(open("tests/f04-sandbox/probe.py", encoding="utf-8").read())'` — успешно.
 - F04-T02: `git diff --check` — без замечаний.
 - F04-T02: runner сделан executable для документированного прямого запуска; `bash -n tests/f04-sandbox/run.sh tests/run.sh`, `test -x tests/f04-sandbox/run.sh` и `git diff --check` — успешно.
+- F04-T02: добавлена очистка трёх generated managed-HOME leaf paths после приёмки; `bash -n tests/f04-sandbox/run.sh`, `python3 -c 'import ast; ast.parse(open("tests/f04-sandbox/probe.py", encoding="utf-8").read())'` и `git diff --check` — успешно.
 - F04-T02: runtime runner не запускался в этой среде; приёмка bwrap mounts/HOME ожидает отчёт с целевого пользовательского хоста.
 
 - F04-T01: подготовлен runtime acceptance runner `./tests/run.sh f04-base-runtime`; он проверяет root/runtime paths, очищенное environment, read-only system mounts, argv/exit status, SIGTERM forwarding и fail-closed на симулированной ошибке обязательного `/usr` bind.

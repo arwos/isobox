@@ -10,6 +10,8 @@ permissions, and an unmounted host path is not visible. It also checks that
 managed HOME persists for the same profile and `--app-id`, differs for another
 profile or app ID, and has owner-only mode `0700`. A profile with an unavailable
 mount must fail before its application starts.
+The runner removes only the managed-HOME leaf directories it creates for its
+temporary profiles; the shared `/tmp/isobox-<uid>` root is left intact.
 
 The runner needs Go, Python 3, `bwrap`, user namespaces, and a real sticky
 `/tmp`. Each run saves `result.txt`, the build log, generated runtime logs, and
