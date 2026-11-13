@@ -88,14 +88,27 @@ func configureProxyIngressRouting() error {
 	if err != nil {
 		return fmt.Errorf("inspect IPv4 routes after pasta setup: %w", err)
 	}
+	pastaDefaultRoutes := 0
 	for _, route := range routes {
-		if route.Dst == nil && route.LinkIndex == ingress.Attrs().Index {
-			if err := netlink.RouteDel(&route); err != nil {
-				return fmt.Errorf("remove pasta default route from the main table: %w", err)
-			}
+		if !isIPv4DefaultRoute(route) {
+			continue
+		}
+		pastaDefaultRoutes++
+		if route.LinkIndex != ingress.Attrs().Index {
+			return fmt.Errorf("an unexpected IPv4 default route appeared during pasta setup")
+		}
+		if err := netlink.RouteDel(&route); err != nil {
+			return fmt.Errorf("remove pasta default route from the main table: %w", err)
 		}
 	}
+	if pastaDefaultRoutes != 1 {
+		return fmt.Errorf("expected one temporary pasta IPv4 default route, found %d", pastaDefaultRoutes)
+	}
 	if err := netlink.RouteReplace(&netlink.Route{
+		Dst: &net.IPNet{
+			IP:   net.IPv4zero,
+			Mask: net.CIDRMask(0, 32),
+		},
 		LinkIndex: tun.Attrs().Index,
 		Scope:     netlink.SCOPE_LINK,
 		Table:     254,
@@ -109,11 +122,12 @@ func configureProxyIngressRouting() error {
 	}
 	defaultRoutes := 0
 	for _, route := range routes {
-		if route.Dst == nil {
-			defaultRoutes++
-			if route.LinkIndex != tun.Attrs().Index {
-				return fmt.Errorf("an IPv4 default route bypasses the proxy TUN")
-			}
+		if !isIPv4DefaultRoute(route) {
+			continue
+		}
+		defaultRoutes++
+		if route.LinkIndex != tun.Attrs().Index {
+			return fmt.Errorf("an IPv4 default route bypasses the proxy TUN")
 		}
 	}
 	if defaultRoutes != 1 {

@@ -77,7 +77,7 @@ func RunProxyTUNHelper(args []string) (int, bool) {
 		fmt.Fprintf(os.Stderr, "isobox: cannot enable loopback in the proxy network namespace: %v\n", err)
 		return 125, true
 	}
-	tunFile, err := configureProxyTUN()
+	tunFile, err := configureProxyTUN(!ingressGuard)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "isobox: cannot configure the proxy TUN interface: %v\n", err)
 		return 125, true
@@ -296,7 +296,7 @@ func enableProxyLoopback() error {
 	return nil
 }
 
-func configureProxyTUN() (*os.File, error) {
+func configureProxyTUN(installDefaultRoute bool) (*os.File, error) {
 	device, err := os.OpenFile("/dev/net/tun", os.O_RDWR, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open /dev/net/tun: %w", err)
@@ -348,21 +348,27 @@ func configureProxyTUN() (*os.File, error) {
 		_ = device.Close()
 		return nil, fmt.Errorf("bring up proxy TUN interface: %w", err)
 	}
-	if err := netlink.RouteAdd(&netlink.Route{
-		Dst: &net.IPNet{
-			IP:   net.IPv4zero,
-			Mask: net.CIDRMask(0, 32),
-		},
-		LinkIndex: link.Attrs().Index,
-		Scope:     netlink.SCOPE_LINK,
-	}); err != nil {
-		_ = device.Close()
-		return nil, fmt.Errorf("install IPv4 default route through proxy TUN: %w", err)
+	if installDefaultRoute {
+		if err := netlink.RouteAdd(&netlink.Route{
+			Dst: &net.IPNet{
+				IP:   net.IPv4zero,
+				Mask: net.CIDRMask(0, 32),
+			},
+			LinkIndex: link.Attrs().Index,
+			Scope:     netlink.SCOPE_LINK,
+		}); err != nil {
+			_ = device.Close()
+			return nil, fmt.Errorf("install IPv4 default route through proxy TUN: %w", err)
+		}
 	}
 	routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
 	if err != nil {
 		_ = device.Close()
 		return nil, fmt.Errorf("verify proxy TUN IPv4 routes: %w", err)
+	}
+	expectedDefaultRoutes := 0
+	if installDefaultRoute {
+		expectedDefaultRoutes = 1
 	}
 	defaultRoutes := 0
 	for _, route := range routes {
@@ -370,14 +376,14 @@ func configureProxyTUN() (*os.File, error) {
 			continue
 		}
 		defaultRoutes++
-		if route.LinkIndex != link.Attrs().Index {
+		if !installDefaultRoute || route.LinkIndex != link.Attrs().Index {
 			_ = device.Close()
 			return nil, fmt.Errorf("an unexpected IPv4 default route bypasses the proxy TUN")
 		}
 	}
-	if defaultRoutes != 1 {
+	if defaultRoutes != expectedDefaultRoutes {
 		_ = device.Close()
-		return nil, fmt.Errorf("expected one IPv4 default route through the proxy TUN, found %d", defaultRoutes)
+		return nil, fmt.Errorf("expected %d IPv4 default route(s) during proxy TUN setup, found %d", expectedDefaultRoutes, defaultRoutes)
 	}
 	return device, nil
 }
