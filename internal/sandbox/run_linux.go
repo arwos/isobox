@@ -20,6 +20,7 @@ import (
 
 	"github.com/arwos/isobox/internal/limits"
 	"github.com/arwos/isobox/internal/profile"
+	"github.com/arwos/isobox/internal/proxy"
 )
 
 type bwrapStatus struct {
@@ -57,6 +58,35 @@ func RunWithNetwork(command *exec.Cmd, network NetworkRuntime, rules []profile.P
 	return run(command, &network, append([]profile.PortRule(nil), rules...), requested, systemdRun)
 }
 
+type proxyTUNProcess struct {
+	tunnel *proxy.Tunnel
+}
+
+func (process *proxyTUNProcess) waitReady() error {
+	select {
+	case <-process.tunnel.Done():
+		if err := process.tunnel.Err(); err != nil {
+			return err
+		}
+		return fmt.Errorf("proxy TUN data plane stopped during startup")
+	default:
+		return nil
+	}
+}
+
+func (*proxyTUNProcess) configureForwards(rules []profile.PortRule) error {
+	if len(rules) != 0 {
+		return fmt.Errorf("proxy TUN does not accept host port forwards")
+	}
+	return nil
+}
+
+func (process *proxyTUNProcess) stop() { _ = process.tunnel.Close() }
+
+func (process *proxyTUNProcess) doneChannel() <-chan struct{} { return process.tunnel.Done() }
+
+func (process *proxyTUNProcess) error() error { return process.tunnel.Err() }
+
 func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, requested profile.ResourceLimits, systemdRun string) (int, error) {
 	if command == nil {
 		return 0, fmt.Errorf("bwrap command is required")
@@ -71,7 +101,8 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 	if network != nil && network.activeBackend() == "none" {
 		return 0, fmt.Errorf("network supervisor requires a selected backend")
 	}
-	lateNetworkNamespace := network != nil && (network.Mode == profile.NetworkModeDirect || network.Mode == profile.NetworkModeOff && len(rules) != 0)
+	proxyTUN := network != nil && network.Mode == profile.NetworkModeProxy
+	lateNetworkNamespace := network != nil && (network.Mode == profile.NetworkModeDirect || proxyTUN || network.Mode == profile.NetworkModeOff && len(rules) != 0)
 	bootstrapTaskSlack := uint64(0)
 	if network != nil && network.Mode == profile.NetworkModeOff && len(rules) != 0 {
 		bootstrapTaskSlack = limits.OffGuardBootstrapSlack(requested)
@@ -87,19 +118,35 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 	needsGate := network != nil || limits.Any(requested)
 	var gateReader, gateWriter *os.File
 	var offGuardGate *offGuardStartupGate
+	var proxyGate *proxyTUNStartupGate
 	if needsGate {
 		if lateNetworkNamespace {
-			var err error
-			offGuardGate, err = newOffGuardStartupGate()
-			if err != nil {
-				closeExtraFiles(command.ExtraFiles)
-				return 0, fmt.Errorf("create off-mode startup gate: %w", err)
-			}
-			command.Args, err = addBwrapMount(command.Args, "--ro-bind", offGuardGate.directory, "/run/.isobox-control")
-			if err != nil {
-				_ = offGuardGate.Close()
-				closeExtraFiles(command.ExtraFiles)
-				return 0, err
+			if proxyTUN {
+				var err error
+				proxyGate, err = newProxyTUNStartupGate()
+				if err != nil {
+					closeExtraFiles(command.ExtraFiles)
+					return 0, fmt.Errorf("create proxy TUN startup gate: %w", err)
+				}
+				command.Args, err = addBwrapMount(command.Args, "--ro-bind", proxyGate.directory, "/run/.isobox-control")
+				if err != nil {
+					_ = proxyGate.Close()
+					closeExtraFiles(command.ExtraFiles)
+					return 0, err
+				}
+			} else {
+				var err error
+				offGuardGate, err = newOffGuardStartupGate()
+				if err != nil {
+					closeExtraFiles(command.ExtraFiles)
+					return 0, fmt.Errorf("create network startup gate: %w", err)
+				}
+				command.Args, err = addBwrapMount(command.Args, "--ro-bind", offGuardGate.directory, "/run/.isobox-control")
+				if err != nil {
+					_ = offGuardGate.Close()
+					closeExtraFiles(command.ExtraFiles)
+					return 0, err
+				}
 			}
 		} else {
 			var err error
@@ -120,6 +167,9 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 	}
 	if offGuardGate != nil {
 		defer offGuardGate.Close()
+	}
+	if proxyGate != nil {
+		defer proxyGate.Close()
 	}
 	statusFD := 3 + len(command.ExtraFiles)
 	if err := setStatusFD(command.Args, statusFD); err != nil {
@@ -202,11 +252,25 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 				applicationPID := childPID
 				if network != nil && forwarder == nil {
 					networkPID := childPID
-					if lateNetworkNamespace {
+					if proxyTUN {
+						var tunFile *os.File
+						networkPID, tunFile, err = proxyGate.WaitForTUN(hostNetworkNamespace, childPID)
+						applicationPID = networkPID
+						if err == nil {
+							var tunnel *proxy.Tunnel
+							tunnel, err = proxy.StartTUNTunnel(tunFile, network.ProxyAlias)
+							if err == nil {
+								forwarder = &proxyTUNProcess{tunnel: tunnel}
+								err = forwarder.waitReady()
+							}
+						}
+					} else if lateNetworkNamespace {
 						networkPID, err = offGuardGate.WaitForNamespace(hostNetworkNamespace, childPID)
 						applicationPID = networkPID
-					}
-					if err == nil {
+						if err == nil {
+							forwarder, err = setupNetworkBackendWithFallback(network, networkPID, rules, command.Stdout, command.Stderr, startNetworkBackend)
+						}
+					} else if err == nil {
 						forwarder, err = setupNetworkBackendWithFallback(network, networkPID, rules, command.Stdout, command.Stderr, startNetworkBackend)
 					}
 					if err == nil && forwarder != nil {
@@ -214,6 +278,16 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 					}
 				}
 				if !gateReleased && needsGate {
+					if err == nil && proxyGate != nil {
+						select {
+						case <-forwarderDone:
+							err = forwarder.error()
+							if err == nil {
+								err = fmt.Errorf("proxy TUN data plane stopped during startup")
+							}
+						default:
+						}
+					}
 					if err == nil {
 						if bootstrapTaskSlack != 0 {
 							err = limits.VerifyCgroupPIDWithBootstrapSlack(childPID, requested, bootstrapTaskSlack)
@@ -244,7 +318,9 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 						}
 						return 125, fmt.Errorf("apply profile resource limits: %w", err)
 					}
-					if offGuardGate != nil {
+					if proxyGate != nil {
+						err = proxyGate.Release()
+					} else if offGuardGate != nil {
 						err = offGuardGate.Release()
 					} else {
 						_, err = gateWriter.Write([]byte{1})

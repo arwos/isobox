@@ -18,6 +18,7 @@ type NetworkRuntime struct {
 	PortForwarder  preflight.BackendKind
 	Executable     string
 	Resolver       []byte
+	ProxyAlias     string
 	PastaDNSArgs   []string
 	FallbackReason string
 	// Fallback is a prevalidated direct backend attempted before bwrap's gate opens.
@@ -38,6 +39,7 @@ func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath s
 		Mode:           selection.Mode,
 		Backend:        selection.Network,
 		PortForwarder:  selection.PortForwarder,
+		ProxyAlias:     selection.ProxyAlias,
 		FallbackReason: selection.FallbackReason,
 	}
 	backend := runtime.activeBackend()
@@ -49,6 +51,17 @@ func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath s
 	case preflight.BackendSlirp4netns:
 		runtime.Executable = slirpPath
 	case preflight.BackendProxyTUN:
+		if runtime.Mode != profile.NetworkModeProxy {
+			return NetworkRuntime{}, fmt.Errorf("proxy TUN backend cannot serve network mode %q", runtime.Mode)
+		}
+		if runtime.ProxyAlias == "" {
+			return NetworkRuntime{}, fmt.Errorf("proxy network mode requires a configured proxy alias")
+		}
+		address := net.ParseIP(selection.DNSAddress)
+		if address == nil || address.To4() == nil || strings.Contains(selection.DNSAddress, ":") {
+			return NetworkRuntime{}, fmt.Errorf("proxy network mode requires an explicit IPv4 DNS server")
+		}
+		runtime.Resolver = []byte("nameserver " + address.To4().String() + "\n")
 		return runtime, nil
 	default:
 		return NetworkRuntime{}, fmt.Errorf("unsupported selected network backend %q", backend)

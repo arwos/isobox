@@ -214,6 +214,24 @@ func TestDirectFallbackDNSCompatible(t *testing.T) {
 	}
 }
 
+func TestSelectBackendProxyRequiresOnlyProxyTUNAndPreservesProfileAlias(t *testing.T) {
+	config := profile.EffectiveProfile{
+		Profile: profile.Profile{Network: profile.NetworkConfig{
+			Mode:       profile.NetworkModeProxy,
+			ProxyAlias: "secure-exit",
+		}},
+		NetworkMode: profile.NetworkModeProxy,
+		DNSServer:   "192.0.2.53",
+	}
+	selection, err := SelectBackend(config, Capabilities{})
+	if err != nil {
+		t.Fatalf("SelectBackend() error = %v", err)
+	}
+	if selection.Network != BackendProxyTUN || selection.PortForwarder != BackendNone || selection.ProxyAlias != "secure-exit" || selection.DNSAddress != "192.0.2.53" {
+		t.Fatalf("proxy selection = %#v, want proxy TUN, profile alias, and IPv4 DNS", selection)
+	}
+}
+
 func directTestProfile(ports []profile.PortRule) profile.EffectiveProfile {
 	return profile.EffectiveProfile{
 		NetworkMode: profile.NetworkModeDirect,

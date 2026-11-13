@@ -38,3 +38,16 @@
 - `./tests/f06-proxy/client/run.sh` — прошло; отчёт создан в `/tmp/isobox-test-results/f06-proxy-client.QZnh34/result.txt`. Runner записывает metadata и raw output и может быть запущен пользователем повторно.
 
 Проверены no-auth и username/password negotiation, отказ auth без утечки credentials, malformed method/reply, TCP CONNECT с IPv4/domain, запрет downgrade, IPv6/invalid destinations, SOCKS refusal и недоступность без direct retry, отмена handshake, UDP ASSOCIATE/auth, relay-only UDP send, игнорирование datagrams от другого источника, FRAG/IPv6 rejection и завершение association вместе с control connection/context. Использовались `net.Pipe` и UDP mock; реальные сетевые сокеты, sing-box/Podman, TUN packet conversion, внешний DNS/Internet capture и IPv6/ICMP/raw rejection на TUN уровне здесь не проверялись и остаются в T03/T04.
+
+### F06-T03 — прозрачный proxy TUN (частично)
+
+- `gofmt -w internal/proxy/tunnel_linux.go internal/proxy/tunnel_linux_test.go internal/sandbox/tun_helper_linux.go internal/sandbox/run_linux.go internal/sandbox/build.go internal/sandbox/tun_gate_linux.go internal/preflight/backend.go internal/preflight/preflight.go cmd/isobox/main.go` — успешно.
+- `go mod tidy` — успешно; добавлены gVisor, netlink и `x/sys` зависимости.
+- `go test ./... -count=1` — прошло.
+- `go test -race ./internal/proxy ./internal/sandbox ./internal/preflight -count=1` — прошло.
+- `go vet ./...` — прошло.
+- `go build ./...` — exit 0; GVM вывел предупреждение, что stat cache нельзя записать в read-only `/home/user/.gvm/.cache`.
+- `git diff --check` — без замечаний.
+- Unit-проверки подтверждают фильтр IPv4 TCP/UDP (IPv6, ICMP, raw protocol, malformed short packet отбрасываются), двунаправленный TCP bridge, завершение channel-backed packet workers и запрет новых flow после начала shutdown.
+
+Не проверено на runtime: `/dev/net/tun` отсутствует в текущем окружении; TUN interface setup, `SCM_RIGHTS` startup gate, bwrap helper capabilities/sysctl/seccomp, передача DNS/TCP/UDP через sing-box/Podman, packet capture на хосте, активный отказ proxy и опубликованные host ports. Дополнительную локальную проверку Unix control socket нельзя выполнить в sandbox: `net.ListenUnix`/`net.FileConn` возвращают `operation not permitted`. Proxy mode с опубликованными портами пока блокируется fail-closed. Поэтому F06-T03 помечен `[~]`; для завершения нужны runtime acceptance на обычном Linux host с доступным TUN и безопасный ingress-only forwarding path.

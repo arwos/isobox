@@ -116,3 +116,50 @@ func TestBuildOffWithPortsLimitsHelperRuntimeTasks(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildProxyNetworkUsesPrivateTUNHelperAndIPv4Resolver(t *testing.T) {
+	config := profile.EffectiveProfile{
+		Profile: profile.Profile{
+			HomePath: t.TempDir(),
+			Network: profile.NetworkConfig{
+				Mode:       profile.NetworkModeProxy,
+				ProxyAlias: "private-exit",
+			},
+		},
+		NetworkMode: profile.NetworkModeProxy,
+		DNSServer:   "192.0.2.53",
+	}
+	command, err := BuildCommand("/usr/bin/bwrap", "", config, "/tmp/profile.unic", "test-app", []string{"/usr/bin/curl", "https://example.org"}, NetworkRuntime{
+		Mode:       profile.NetworkModeProxy,
+		Backend:    preflight.BackendProxyTUN,
+		ProxyAlias: "private-exit",
+		Resolver:   []byte("nameserver 192.0.2.53\n"),
+	})
+	if err != nil {
+		t.Fatalf("BuildCommand() error = %v", err)
+	}
+	defer closeExtraFiles(command.ExtraFiles)
+
+	args := strings.Join(command.Args, "\x00")
+	for _, required := range []string{
+		"--unshare-net",
+		"--disable-userns",
+		"--assert-userns-disabled",
+		"--cap-add\x00CAP_NET_ADMIN",
+		"--dev-bind\x00/dev/net/tun\x00/dev/net/tun",
+		"--ro-bind-data\x003\x00/etc/resolv.conf",
+		internalSandboxBinaryPath + "\x00" + internalProxyTUNCommand + "\x00--gate-path\x00" + internalProxyTUNGatePath + "\x00--\x00/usr/bin/curl\x00https://example.org",
+	} {
+		if !strings.Contains(args, required) {
+			t.Errorf("BuildCommand() arguments omit %q: %q", required, command.Args)
+		}
+	}
+	for _, forbidden := range []string{"--cap-add\x00CAP_SYS_ADMIN", "--block-fd", "private-exit"} {
+		if strings.Contains(args, forbidden) {
+			t.Errorf("BuildCommand() includes %q; proxy credentials and alias belong to the host network component, not the application command", forbidden)
+		}
+	}
+	if len(command.ExtraFiles) != 1 {
+		t.Fatalf("proxy DNS data descriptors = %d, want one", len(command.ExtraFiles))
+	}
+}

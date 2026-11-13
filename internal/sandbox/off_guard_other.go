@@ -9,3 +9,7 @@ func RunOffGuardHelper([]string) (int, bool) {
 func RunIPv4NetworkHelper([]string) (int, bool) {
 	return 0, false
 }
+
+func RunProxyTUNHelper([]string) (int, bool) {
+	return 0, false
+}

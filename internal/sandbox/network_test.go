@@ -48,6 +48,24 @@ func TestPrepareNetworkAcceptsZeroFallbackBackend(t *testing.T) {
 	}
 }
 
+func TestPrepareNetworkBuildsProxyResolverWithoutExposingCredentials(t *testing.T) {
+	runtime, err := PrepareNetwork(preflight.BackendSelection{
+		Mode:       profile.NetworkModeProxy,
+		Network:    preflight.BackendProxyTUN,
+		ProxyAlias: "secure-exit",
+		DNSAddress: "192.0.2.53",
+	}, "", "")
+	if err != nil {
+		t.Fatalf("PrepareNetwork() error = %v", err)
+	}
+	if runtime.activeBackend() != preflight.BackendProxyTUN || runtime.ProxyAlias != "secure-exit" || string(runtime.Resolver) != "nameserver 192.0.2.53\n" {
+		t.Fatalf("proxy runtime = %#v, want proxy TUN, alias, and one IPv4 nameserver", runtime)
+	}
+	if runtime.Executable != "" || runtime.Fallback != nil {
+		t.Fatalf("proxy runtime unexpectedly selected an executable or fallback: %#v", runtime)
+	}
+}
+
 func TestCombineResolverConfigsAddsBackendSpecificFallback(t *testing.T) {
 	got := combineResolverConfigs(
 		[]byte("nameserver 169.254.1.1\nnameserver 192.0.2.53\n"),

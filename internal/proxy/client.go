@@ -144,27 +144,32 @@ func (client *socks5Client) UDPAssociate(ctx context.Context) (*UDPAssociation, 
 	return association, nil
 }
 
+// probe verifies that the configured server accepts an IPv4 TCP connection and
+// the selected SOCKS5 authentication method without opening a destination.
+func (client *socks5Client) probe(ctx context.Context) error {
+	connection, stopContextClose, err := client.connectControl(ctx)
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	if err := connection.SetDeadline(time.Time{}); err != nil {
+		stopContextClose()
+		return fmt.Errorf("clear SOCKS5 probe deadline: %w", err)
+	}
+	if !stopContextClose() {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return contextErr
+		}
+		return context.Canceled
+	}
+	return nil
+}
+
 func (client *socks5Client) command(ctx context.Context, command byte, encodedAddress []byte) (net.Conn, socksAddress, error) {
-	if ctx == nil {
-		return nil, socksAddress{}, fmt.Errorf("SOCKS5 context is required")
-	}
-	if client == nil || client.dialer == nil || client.server == "" {
-		return nil, socksAddress{}, fmt.Errorf("SOCKS5 client is not configured")
-	}
-	if command != socksCommandConnect && command != socksCommandUDP {
-		return nil, socksAddress{}, fmt.Errorf("unsupported SOCKS5 command")
-	}
-	if err := ctx.Err(); err != nil {
+	connection, stopContextClose, err := client.connectControl(ctx)
+	if err != nil {
 		return nil, socksAddress{}, err
 	}
-	connection, err := client.dialer.DialContext(ctx, "tcp4", client.server)
-	if err != nil {
-		if contextErr := ctx.Err(); contextErr != nil {
-			return nil, socksAddress{}, contextErr
-		}
-		return nil, socksAddress{}, fmt.Errorf("connect to SOCKS5 server: %w", err)
-	}
-	stopContextClose := context.AfterFunc(ctx, func() { _ = connection.Close() })
 	keepConnection := false
 	defer func() {
 		if !keepConnection {
@@ -172,19 +177,6 @@ func (client *socks5Client) command(ctx context.Context, command byte, encodedAd
 			_ = connection.Close()
 		}
 	}()
-	deadline := time.Now().Add(client.timeout)
-	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
-		deadline = contextDeadline
-	}
-	if err := connection.SetDeadline(deadline); err != nil {
-		return nil, socksAddress{}, fmt.Errorf("set SOCKS5 handshake deadline: %w", err)
-	}
-	if err := client.negotiate(connection); err != nil {
-		if contextErr := ctx.Err(); contextErr != nil {
-			return nil, socksAddress{}, contextErr
-		}
-		return nil, socksAddress{}, err
-	}
 	request := make([]byte, 3, 3+len(encodedAddress))
 	request[0], request[1], request[2] = socksVersion, command, 0
 	request = append(request, encodedAddress...)
@@ -215,6 +207,48 @@ func (client *socks5Client) command(ctx context.Context, command byte, encodedAd
 	}
 	keepConnection = true
 	return connection, bound, nil
+}
+
+func (client *socks5Client) connectControl(ctx context.Context) (net.Conn, func() bool, error) {
+	if ctx == nil {
+		return nil, nil, fmt.Errorf("SOCKS5 context is required")
+	}
+	if client == nil || client.dialer == nil || client.server == "" {
+		return nil, nil, fmt.Errorf("SOCKS5 client is not configured")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	connection, err := client.dialer.DialContext(ctx, "tcp4", client.server)
+	if err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return nil, nil, contextErr
+		}
+		return nil, nil, fmt.Errorf("connect to SOCKS5 server: %w", err)
+	}
+	stopContextClose := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	keepConnection := false
+	defer func() {
+		if !keepConnection {
+			stopContextClose()
+			_ = connection.Close()
+		}
+	}()
+	deadline := time.Now().Add(client.timeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := connection.SetDeadline(deadline); err != nil {
+		return nil, nil, fmt.Errorf("set SOCKS5 handshake deadline: %w", err)
+	}
+	if err := client.negotiate(connection); err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return nil, nil, contextErr
+		}
+		return nil, nil, err
+	}
+	keepConnection = true
+	return connection, stopContextClose, nil
 }
 
 func (client *socks5Client) negotiate(connection net.Conn) error {

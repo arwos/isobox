@@ -31,6 +31,7 @@ type BackendSelection struct {
 	FallbackNetwork            BackendKind
 	DisableAutomaticForwarding bool
 	EnforceEgressFilter        bool
+	ProxyAlias                 string
 	DNSAddress                 string
 	UseHostDNS                 bool
 	FallbackReason             string
@@ -44,6 +45,7 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 		Mode:            config.NetworkMode,
 		DNSAddress:      config.DNSServer,
 		UseHostDNS:      config.DNSServer == "",
+		ProxyAlias:      config.Network.ProxyAlias,
 		HostForwards:    append([]profile.PortRule(nil), config.Network.Ports...),
 		FallbackNetwork: BackendNone,
 	}

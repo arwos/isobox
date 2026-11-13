@@ -50,6 +50,40 @@ func newPipeClient(auth AuthMode, username, password string) (*socks5Client, net
 	}, serverSide, dialer
 }
 
+func TestSOCKS5ProbeNegotiatesWithoutOpeningDestination(t *testing.T) {
+	client, serverSide, dialer := newPipeClient(AuthNone, "", "")
+	serverResult := make(chan error, 1)
+	go func() {
+		defer serverSide.Close()
+		if err := expectGreeting(serverSide, socksMethodNone); err != nil {
+			serverResult <- err
+			return
+		}
+		if err := writeFull(serverSide, []byte{socksVersion, socksMethodNone}); err != nil {
+			serverResult <- err
+			return
+		}
+		var extra [1]byte
+		if _, err := serverSide.Read(extra[:]); !errors.Is(err, io.EOF) {
+			serverResult <- errors.New("SOCKS5 readiness probe sent a destination command or kept its control connection open")
+			return
+		}
+		serverResult <- nil
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := client.probe(ctx); err != nil {
+		t.Fatalf("probe() error = %v", err)
+	}
+	if dialer.calls != 1 || dialer.network != "tcp4" {
+		t.Fatalf("probe dial = calls %d, network %q; want one IPv4 TCP connection", dialer.calls, dialer.network)
+	}
+	if err := <-serverResult; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSOCKS5ConnectNoAuthDomainAndIPv4(t *testing.T) {
 	tests := []struct {
 		name        string

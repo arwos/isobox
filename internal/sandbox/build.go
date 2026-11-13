@@ -29,8 +29,10 @@ type systemMount struct {
 const sandboxHome = "/home/isobox"
 const internalOffGuardCommand = "__isobox_internal_off_guard"
 const internalIPv4NetworkCommand = "__isobox_internal_ipv4_network"
+const internalProxyTUNCommand = "__isobox_internal_proxy_tun"
 const internalOffGuardControlDir = "/run/.isobox-control"
 const internalOffGuardGatePath = internalOffGuardControlDir + "/gate.sock"
+const internalProxyTUNGatePath = internalOffGuardGatePath
 const internalSandboxBinaryPath = "/tmp/.isobox-internal"
 
 // BuildCommand creates a bwrap command for the supported portion of the
@@ -74,10 +76,10 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	if err := validateProfileMountTargets(profileMounts); err != nil {
 		return nil, err
 	}
-	if config.NetworkMode == profile.NetworkModeDirect {
+	if config.NetworkMode == profile.NetworkModeDirect || config.NetworkMode == profile.NetworkModeProxy {
 		for _, mount := range profileMounts {
 			if mountTargetsOverlap(mount.target, "/etc/resolv.conf") {
-				return nil, fmt.Errorf("profile mount target %q conflicts with the direct-mode DNS configuration", mount.target)
+				return nil, fmt.Errorf("profile mount target %q conflicts with the network DNS configuration", mount.target)
 			}
 		}
 	}
@@ -85,6 +87,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 
 	offGuard := config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) != 0
 	directNetwork := config.NetworkMode == profile.NetworkModeDirect
+	proxyNetwork := config.NetworkMode == profile.NetworkModeProxy
 	ipv4Setup := directNetwork || config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) == 0
 	activeBackend := network.activeBackend()
 	args := []string{"--unshare-user"}
@@ -106,7 +109,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	for _, mount := range systemMounts {
 		args = append(args, "--ro-bind", mount.source, mount.destination)
 	}
-	if directNetwork {
+	if directNetwork || proxyNetwork {
 		args = append(args, "--ro-bind-data", "3", "/etc/resolv.conf")
 	}
 	args = append(args,
@@ -150,6 +153,9 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		// value is removed by the helper before it execs the application.
 		args = append(args, "--setenv", "GOMAXPROCS", "1")
 	}
+	if proxyNetwork {
+		args = append(args, "--setenv", "GOMAXPROCS", "1")
+	}
 	if ipv4Setup {
 		binary, err := os.Executable()
 		if err != nil {
@@ -183,7 +189,23 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 			"--cap-add", "CAP_NET_ADMIN",
 		)
 	}
-	if !offGuard && ((!ipv4Setup && activeBackend != "none") || limits.Any(config.Limits)) {
+	if proxyNetwork {
+		binary, err := os.Executable()
+		if err != nil {
+			return nil, fmt.Errorf("locate isobox executable for the proxy TUN helper: %w", err)
+		}
+		binary, err = filepath.EvalSymlinks(binary)
+		if err != nil {
+			return nil, fmt.Errorf("resolve isobox executable for the proxy TUN helper: %w", err)
+		}
+		args = append(args,
+			"--ro-bind", binary, internalSandboxBinaryPath,
+			"--cap-add", "CAP_NET_ADMIN",
+			"--dir", "/dev/net",
+			"--dev-bind", "/dev/net/tun", "/dev/net/tun",
+		)
+	}
+	if !offGuard && !proxyNetwork && ((!ipv4Setup && activeBackend != "none") || limits.Any(config.Limits)) {
 		args = append(args, "--block-fd", "3")
 	}
 	args = append(args,
@@ -211,11 +233,16 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		} else {
 			args = append(args, internalSandboxBinaryPath, internalIPv4NetworkCommand, "--")
 		}
+	} else if proxyNetwork {
+		args = append(args, internalSandboxBinaryPath, internalProxyTUNCommand, "--gate-path", internalProxyTUNGatePath, "--", application[0])
+		args = append(args, application[1:]...)
 	}
-	args = append(args, application...)
+	if !proxyNetwork {
+		args = append(args, application...)
+	}
 
 	command := exec.Command(bubblewrap, args...)
-	if directNetwork {
+	if directNetwork || proxyNetwork {
 		resolverFile, err := anonymousDataFile(network.Resolver)
 		if err != nil {
 			return nil, fmt.Errorf("prepare sandbox DNS configuration: %w", err)
@@ -238,6 +265,15 @@ func validateSupportedProfile(config profile.EffectiveProfile, network NetworkRu
 		}
 		if len(network.Resolver) == 0 {
 			return fmt.Errorf("direct network mode requires an explicit sandbox DNS configuration")
+		}
+		return nil
+	}
+	if config.NetworkMode == profile.NetworkModeProxy {
+		if network.activeBackend() != "proxy-tun" || network.ProxyAlias == "" {
+			return fmt.Errorf("proxy network mode requires the selected proxy TUN backend and a stored proxy alias")
+		}
+		if len(network.Resolver) == 0 {
+			return fmt.Errorf("proxy network mode requires an explicit IPv4 DNS configuration")
 		}
 		return nil
 	}
