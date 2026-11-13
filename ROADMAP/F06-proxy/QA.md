@@ -39,7 +39,7 @@
 
 Проверены no-auth и username/password negotiation, отказ auth без утечки credentials, malformed method/reply, TCP CONNECT с IPv4/domain, запрет downgrade, IPv6/invalid destinations, SOCKS refusal и недоступность без direct retry, отмена handshake, UDP ASSOCIATE/auth, relay-only UDP send, игнорирование datagrams от другого источника, FRAG/IPv6 rejection и завершение association вместе с control connection/context. Использовались `net.Pipe` и UDP mock; реальные сетевые сокеты, sing-box/Podman, TUN packet conversion, внешний DNS/Internet capture и IPv6/ICMP/raw rejection на TUN уровне здесь не проверялись и остаются в T03/T04.
 
-### F06-T03 — прозрачный proxy TUN (частично)
+### F06-T03 — прозрачный proxy TUN (пользовательская runtime-приёмка пройдена)
 
 - `gofmt -w internal/proxy/tunnel_linux.go internal/proxy/tunnel_linux_test.go internal/sandbox/tun_helper_linux.go internal/sandbox/run_linux.go internal/sandbox/build.go internal/sandbox/tun_gate_linux.go internal/preflight/backend.go internal/preflight/preflight.go cmd/isobox/main.go` — успешно.
 - `go mod tidy` — успешно; добавлены gVisor, netlink и `x/sys` зависимости.
@@ -50,7 +50,7 @@
 - `git diff --check` — без замечаний.
 - Unit-проверки подтверждают фильтр IPv4 TCP/UDP (IPv6, ICMP, raw protocol, malformed short packet отбрасываются), двунаправленный TCP bridge, завершение channel-backed packet workers и запрет новых flow после начала shutdown.
 
-Не проверено на runtime: `/dev/net/tun` отсутствует в текущем окружении; TUN interface setup, `SCM_RIGHTS` startup gate, bwrap helper capabilities/sysctl/seccomp, передача DNS/TCP/UDP через sing-box/Podman, packet capture на хосте, активный отказ proxy и опубликованные host ports. Дополнительную локальную проверку Unix control socket нельзя выполнить в sandbox: `net.ListenUnix`/`net.FileConn` возвращают `operation not permitted`. Guarded proxy ingress добавлен, но его поведение с pasta и nftables пока не подтверждено runtime-приёмкой. F06-T03 помечен `[~]` до такой проверки на обычном Linux host с доступным TUN.
+В локальном Codex execution sandbox отсутствует `/dev/net/tun`, а Unix control socket проверку ограничивает sandbox (`net.ListenUnix`/`net.FileConn` возвращают `operation not permitted`). Эти локальные ограничения не заменяют пользовательскую live-приёмку на target host; результат сценария приведён ниже.
 
 В последней итерации добавлены DNS fallback на первый IPv4 nameserver host `/etc/resolv.conf`, внутренний DNS endpoint `10.89.0.2` с заменой DNS destination перед SOCKS5, и guarded proxy ingress: pasta с фиксированным tap/gateway, nftables default-drop и marked policy route. Для proxy mode с портами startup gate ждёт готовности pasta sockets и подтверждения маршрутов от helper. Добавлены unit checks для DNS mapping, firewall rules, аргументов helper, BuildCommand и pasta options.
 
@@ -97,6 +97,8 @@
 Пользовательский отчёт `/tmp/isobox-test-results/f06-proxy-runtime.i02KOm/result.txt` на `3459a90` прошёл startup gate, передал управление приложению и выполнил DNS-запрос через SOCKS server к настроенному resolver. `getaddrinfo` вернул `EAI_NODATA` (`-5`), но probe принимал только `EAI_NONAME` и завершился до TCP, UDP и опубликованного ingress checks. Probe теперь принимает оба отрицательных DNS результата и отдельно отклоняет успешное разрешение зарезервированного `.invalid` имени. В этом отчёте TCP/UDP echo и ingress forwarding не подтверждены.
 
 Для обновления probe выполнена статическая проверка Python AST через `python3 -c 'import ast; ast.parse(open("tests/f06-proxy/runtime/probe_app.py", encoding="utf-8").read())'`, а также `git diff --check`; обе завершились успешно. Runtime runner и Go tests не запускались.
+
+Пользовательский отчёт `/tmp/isobox-test-results/f06-proxy-runtime.3nZ7zT/result.txt` на `b168fb6` завершился `runtime_acceptance=passed` и `isobox_run_exit_status=0` на Linux Mint 7 / kernel 6.12.116 / Podman 5.4.2. Проверены `DNS_QUERY_OK`, исходящие `OUTBOUND_TCP_OK` и `OUTBOUND_UDP_OK`, готовность приложения, ответ host → sandbox через объявленный TCP port (`PUBLISHED_TCP_INGRESS_OK`, `INGRESS_RESPONSE_OK`) и завершение процесса. Sing-box принял DNS query и TCP/UDP flows. Эта live-приёмка закрывает ранее незапущенные TUN/startup gate, SOCKS DNS/TCP/UDP и marked pasta TCP ingress сценарии. Unit checks из F06-T02/T03 отдельно покрывают SOCKS отказ без direct retry, фильтр IPv6/ICMP/raw traffic, DNS mapping и остановку tunnel workers. В текущем turn локально Go tests и runtime runner не запускались; runtime-приёмку выполнил пользователь на целевом host.
 
 ### F06-T04 — sing-box Podman fixture (приёмка пройдена)
 
