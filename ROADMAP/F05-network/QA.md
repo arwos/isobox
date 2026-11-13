@@ -114,3 +114,10 @@ Acceptance harness теперь проверяет объявленный `::1` 
 - Первый запуск `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-f05-ipv6 --backend pasta --local-only` прошёл IPv4 range и TCP/UDP single-port проверки, затем IPv6 bind probe завершился до `READY`: pasta вернула `Failed to bind port ... for option '-t ::1/...'`; приложение не запустилось. Этот результат не считается IPv6 forwarding pass.
 - Повторные локальные acceptance прогоны остановились раньше отдельных protocol checks: pasta вернула `Couldn't switch to pasta namespaces: Operation not permitted`, а при auto fallback slirp вернул `setns(CLONE_NEWNET): Operation not permitted`. Payload остался за startup gate.
 - Внешний IPv6 также остаётся непроверенным: default route отсутствует, отдельная попытка connect завершилась `Network is unreachable`. F05-T02 остаётся `[!]`; для закрытия нужны host routes, позволяющие pasta поднять IPv6, успешный `::1` TCP/UDP host bind и внешние IPv6 DNS/TCP/UDP пробы.
+
+## Повторная попытка создать локальную IPv6 acceptance-среду
+
+- Временный `bwrap --unshare-user --unshare-net --cap-add CAP_NET_ADMIN` namespace был создан, но `ip link set lo up`, `ip link add ... type dummy`, назначение IPv6 address и route завершились `RTNETLINK answers: Operation not permitted`. Host namespace не изменялся; synthetic routed interface создать не удалось.
+- Одноразовый wrapper, добавляющий `--ipv6-only` только к runtime вызову pasta, и IPv6-only payload с объявленным `::1` TCP+UDP портом завершились до `READY`: `Couldn't switch to pasta namespaces: Operation not permitted`. Это не forwarding acceptance pass; приложение не запускалось.
+- Отдельный `pasta --ipv6-only --config-net ... /usr/bin/sleep 1` завершился с кодом 0, но без клиентского TCP/UDP probe не считается проверкой host forwarding.
+- В этой среде нет безопасного локального способа создать маршрутизируемый IPv6 test interface. Требуется внешний host environment с настроенным IPv6 маршрутом и разрешёнными rootless namespace/netlink операциями.
