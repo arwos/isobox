@@ -74,6 +74,10 @@
 
 После исправления выполнены `gofmt -w internal/sandbox/tun_helper_linux.go`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go vet ./...` и `git diff --check` — все завершились успешно; `go build` напечатал предупреждение GVM о read-only stat cache. Go tests и runtime runner в этой итерации не запускались.
 
+Пользовательский отчёт `/tmp/isobox-test-results/f06-proxy-runtime.VKFIqY/result.txt` на коммите `df2b915` подтвердил, что helper прошёл IPv6 sysctl и маршрутную проверку. Следующий отказ возник при создании TUN default route: `netlink.RouteAdd` вернул `either Dst.IP, Src.IP or Gw must be set`, так как библиотека требует явный `Dst` для default route. Теперь маршрут создаётся с `0.0.0.0/0`, а проверка default route распознаёт и nil destination, и явную сеть с нулевой длиной префикса; default route через любой другой интерфейс блокирует запуск. Отчёт остановился до передачи TUN FD и не проверил proxy traffic. Runtime acceptance остаётся открытой.
+
+Для этой итерации после обновления кода выполнены `gofmt -w internal/sandbox/tun_helper_linux.go`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go vet ./...` и `git diff --check` — все завершились успешно; сборка вывела предупреждение GVM о read-only stat cache. Go tests и runtime runner не запускались.
+
 ### F06-T04 — sing-box Podman fixture (приёмка пройдена)
 
 - `gofmt -w internal/proxy/podman_fixture_test.go` — успешно.

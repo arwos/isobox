@@ -349,6 +349,10 @@ func configureProxyTUN() (*os.File, error) {
 		return nil, fmt.Errorf("bring up proxy TUN interface: %w", err)
 	}
 	if err := netlink.RouteAdd(&netlink.Route{
+		Dst: &net.IPNet{
+			IP:   net.IPv4zero,
+			Mask: net.CIDRMask(0, 32),
+		},
 		LinkIndex: link.Attrs().Index,
 		Scope:     netlink.SCOPE_LINK,
 	}); err != nil {
@@ -362,12 +366,13 @@ func configureProxyTUN() (*os.File, error) {
 	}
 	defaultRoutes := 0
 	for _, route := range routes {
-		if route.Dst == nil {
-			defaultRoutes++
-			if route.LinkIndex != link.Attrs().Index {
-				_ = device.Close()
-				return nil, fmt.Errorf("an unexpected IPv4 default route bypasses the proxy TUN")
-			}
+		if !isIPv4DefaultRoute(route) {
+			continue
+		}
+		defaultRoutes++
+		if route.LinkIndex != link.Attrs().Index {
+			_ = device.Close()
+			return nil, fmt.Errorf("an unexpected IPv4 default route bypasses the proxy TUN")
 		}
 	}
 	if defaultRoutes != 1 {
@@ -375,6 +380,18 @@ func configureProxyTUN() (*os.File, error) {
 		return nil, fmt.Errorf("expected one IPv4 default route through the proxy TUN, found %d", defaultRoutes)
 	}
 	return device, nil
+}
+
+func isIPv4DefaultRoute(route netlink.Route) bool {
+	if route.Dst == nil {
+		return true
+	}
+	if route.Dst.IP == nil {
+		return false
+	}
+	prefixLength, bits := route.Dst.Mask.Size()
+	address := route.Dst.IP.To4()
+	return bits == 32 && prefixLength == 0 && address != nil && address.Equal(net.IPv4zero)
 }
 
 func verifyNoIPv6EgressRoutes() error {
