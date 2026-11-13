@@ -17,6 +17,6 @@
   - Шаги: получить IPv4 packets от sandbox через TUN; namespace-local IPv6 отключается до запуска приложения, а unexpected IPv6 packets отбрасываются; преобразовывать TCP/UDP flows в SOCKS5; направлять DNS к общему/profile IPv4 DNS по тому же SOCKS relay; исключить DNS и data-plane обходы; обеспечить cleanup процессов и FD.
   - Приёмка: приложение не настраивает proxy env и не знает alias/credentials; sandbox не имеет IPv6 адресов/маршрутов; при TUN/SOCKS UDP недоступности приложение не стартует; после отказа активной сессии трафик не переключается напрямую.
   - Реализованы TUN/IPv4/TCP/UDP data plane и startup gate; задача остаётся частичной до runtime acceptance на хосте с `/dev/net/tun` и безопасной комбинации опубликованных host-портов с proxy TUN. Пока proxy-профиль с портами завершается fail-closed.
-- [ ] F06-T04 — Подготовить Podman fixture для тестового sing-box SOCKS5 server.
+- [~] F06-T04 — Подготовить Podman fixture для тестового sing-box SOCKS5 server.
   - Шаги: локальная конфигурация тестового server для TCP и UDP и тестовых credentials; не добавлять sing-box в runtime зависимости или production installer.
-  - Приёмка: fixture запускается локально в Podman и позволяет проверить CONNECT, UDP ASSOCIATE, auth failure и остановку сервера.
+  - Приёмка: fixture запускается локально в Podman и позволяет проверить CONNECT, UDP ASSOCIATE, auth failure и остановку сервера. Файлы добавлены; runtime acceptance ожидает проверки пользователем, поскольку Podman в текущей среде не стартует.

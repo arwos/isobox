@@ -1,6 +1,7 @@
 # F06 Контекст
 
-- Runtime-протокол — только SOCKS5; sing-box используется исключительно как тестовый server в Podman.
+- Runtime-протокол — только SOCKS5; sing-box `v1.14.2` используется исключительно как тестовый server в rootless Podman. Fixture находится в `tests/f06-proxy/sing-box/`, использует loopback-only listener и локальные echo-сервисы; sing-box не является runtime-зависимостью.
+- DNS для proxy mode выбирается по приоритету: IPv4 DNS из профиля, общий DNS isobox, затем первый IPv4 resolver хоста. DNS-запросы приложения идут через SOCKS5 UDP relay; системное разрешение имени самого SOCKS-сервера остаётся необходимым для подключения к нему.
 - По решению пользователя IPv6 полностью отключён namespace-local sysctl ещё до запуска приложения; proxy TUN также создаётся без IPv6 адресов и маршрутов. IPv6 packets в обработчике отбрасываются как дополнительная проверка.
 - Сетевой компонент isobox должен прозрачно перехватывать TCP и UDP. Обычное приложение не настраивает proxy и не получает credentials.
 - SOCKS5 `CONNECT` и `UDP ASSOCIATE` описаны в [RFC 1928](https://www.rfc-editor.org/rfc/rfc1928.html). SOCKS5 не предоставляет IP-layer gateway для ICMP; сервер может молча отбросить неподдержанную UDP datagram.
@@ -9,6 +10,7 @@
 - `slirp4netns --outbound-addr` не является proxy client; это binding outbound address/interface: [manual](https://github.com/rootless-containers/slirp4netns/blob/master/slirp4netns.1.md).
 - TUN/IP stack для F06-T03: `gvisor.dev/gvisor v0.0.0-20260701204157-69c2d17aea96` (Apache-2.0; модуль требует Go 1.26.3, проект использует Go 1.26.8). Stack регистрирует только IPv4, TCP и UDP; собственный SOCKS5 protocol client остаётся компонентом isobox. Проверенные upstream API: [gVisor stack](https://github.com/google/gvisor/blob/69c2d17aea96/pkg/tcpip/stack/stack.go), [TCP forwarder](https://github.com/google/gvisor/blob/69c2d17aea96/pkg/tcpip/transport/tcp/forwarder.go), [UDP forwarder](https://github.com/google/gvisor/blob/69c2d17aea96/pkg/tcpip/transport/udp/forwarder.go), [channel endpoint](https://github.com/google/gvisor/blob/69c2d17aea96/pkg/tcpip/link/channel/channel.go), [module Go version](https://github.com/google/gvisor/blob/69c2d17aea96/go.mod).
 - Официальный sing-box SOCKS inbound: https://sing-box.sagernet.org/configuration/inbound/socks/ . Он нужен для локальной проверки и не входит в runtime.
+- Fixture использует официальный `ghcr.io/sagernet/sing-box:v1.14.2` image с тестовой auth-парой; config только для локальной проверки, `--network host` выбран для доступа сервера к привязанным на loopback TCP/UDP echo endpoints. Inbound bind также ограничен `127.0.0.1`. Проверка запуска/остановки сохраняется в `tests/f06-proxy/sing-box/run.sh`.
 
 ## F06-T01 — хранилище alias и credentials
 

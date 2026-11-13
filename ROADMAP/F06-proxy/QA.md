@@ -51,3 +51,14 @@
 - Unit-проверки подтверждают фильтр IPv4 TCP/UDP (IPv6, ICMP, raw protocol, malformed short packet отбрасываются), двунаправленный TCP bridge, завершение channel-backed packet workers и запрет новых flow после начала shutdown.
 
 Не проверено на runtime: `/dev/net/tun` отсутствует в текущем окружении; TUN interface setup, `SCM_RIGHTS` startup gate, bwrap helper capabilities/sysctl/seccomp, передача DNS/TCP/UDP через sing-box/Podman, packet capture на хосте, активный отказ proxy и опубликованные host ports. Дополнительную локальную проверку Unix control socket нельзя выполнить в sandbox: `net.ListenUnix`/`net.FileConn` возвращают `operation not permitted`. Proxy mode с опубликованными портами пока блокируется fail-closed. Поэтому F06-T03 помечен `[~]`; для завершения нужны runtime acceptance на обычном Linux host с доступным TUN и безопасный ingress-only forwarding path.
+
+### F06-T04 — sing-box Podman fixture (частично)
+
+- `gofmt -w internal/proxy/podman_fixture_test.go` — успешно.
+- `go test ./internal/proxy -count=1` и `go test ./... -count=1` — прошли; fixture integration checks пропускаются без `ISOBOX_SINGBOX_FIXTURE`.
+- `go vet ./...` — прошло.
+- `go build ./...` — exit 0; GVM напечатал предупреждение о записи stat cache в read-only `/home/user/.gvm/.cache`.
+- `bash -n tests/f06-proxy/sing-box/run.sh`, `python3 -m json.tool tests/f06-proxy/sing-box/config.json` и `git diff --check` — без замечаний.
+- `tests/f06-proxy/sing-box/run.sh` — не дошёл до запуска контейнера: `podman info` сообщил `Failed to obtain podman configuration: set sticky bit on: chmod /run/user/1000/libpod: read-only file system`. Отчёт: `/tmp/isobox-test-results/f06-sing-box.IyoGyk/result.txt`.
+
+Runner проверяет TCP CONNECT, UDP ASSOCIATE, неверный пароль и недоступность listener после `podman stop`; тестовые назначения — loopback echo endpoints, внешний Интернет не нужен. Runtime acceptance самого контейнера не проверена из-за недоступного rootless Podman. Запустить на Linux-хосте: `./tests/f06-proxy/sing-box/run.sh`, затем предоставить путь к напечатанному `result.txt`.
