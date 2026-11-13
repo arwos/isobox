@@ -15,6 +15,7 @@ import (
 
 	"github.com/arwos/isobox/internal/limits"
 	"github.com/arwos/isobox/internal/profile"
+	"github.com/arwos/isobox/internal/proxy"
 )
 
 const sandboxPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -34,6 +35,7 @@ const internalOffGuardControlDir = "/run/.isobox-control"
 const internalOffGuardGatePath = internalOffGuardControlDir + "/gate.sock"
 const internalProxyTUNGatePath = internalOffGuardGatePath
 const internalSandboxBinaryPath = "/tmp/.isobox-internal"
+const internalOffGuardNFTPath = "/tmp/.isobox-nft"
 
 // BuildCommand creates a bwrap command for the supported portion of the
 // current sandbox profile. Host paths are limited to fixed runtime paths and
@@ -88,6 +90,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	offGuard := config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) != 0
 	directNetwork := config.NetworkMode == profile.NetworkModeDirect
 	proxyNetwork := config.NetworkMode == profile.NetworkModeProxy
+	proxyIngress := proxyNetwork && len(config.Network.Ports) != 0
 	ipv4Setup := directNetwork || config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) == 0
 	activeBackend := network.activeBackend()
 	args := []string{"--unshare-user"}
@@ -190,6 +193,9 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		)
 	}
 	if proxyNetwork {
+		if proxyIngress && !filepath.IsAbs(nftPath) {
+			return nil, fmt.Errorf("an absolute nftables executable path is required for proxy mode with published ports")
+		}
 		binary, err := os.Executable()
 		if err != nil {
 			return nil, fmt.Errorf("locate isobox executable for the proxy TUN helper: %w", err)
@@ -204,6 +210,9 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 			"--dir", "/dev/net",
 			"--dev-bind", "/dev/net/tun", "/dev/net/tun",
 		)
+		if proxyIngress {
+			args = append(args, "--ro-bind", nftPath, internalOffGuardNFTPath)
+		}
 	}
 	if !offGuard && !proxyNetwork && ((!ipv4Setup && activeBackend != "none") || limits.Any(config.Limits)) {
 		args = append(args, "--block-fd", "3")
@@ -234,7 +243,21 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 			args = append(args, internalSandboxBinaryPath, internalIPv4NetworkCommand, "--")
 		}
 	} else if proxyNetwork {
-		args = append(args, internalSandboxBinaryPath, internalProxyTUNCommand, "--gate-path", internalProxyTUNGatePath, "--", application[0])
+		args = append(args, internalSandboxBinaryPath, internalProxyTUNCommand)
+		if proxyIngress {
+			tcpPorts, udpPorts, err := firewallPortSets(config.Network.Ports)
+			if err != nil {
+				return nil, err
+			}
+			if tcpPorts == "" {
+				tcpPorts = "-"
+			}
+			if udpPorts == "" {
+				udpPorts = "-"
+			}
+			args = append(args, "--ingress-guard", internalOffGuardNFTPath, tcpPorts, udpPorts)
+		}
+		args = append(args, "--gate-path", internalProxyTUNGatePath, "--", application[0])
 		args = append(args, application[1:]...)
 	}
 	if !proxyNetwork {
@@ -256,7 +279,7 @@ func validateSupportedProfile(config profile.EffectiveProfile, network NetworkRu
 	if network.Mode != config.NetworkMode {
 		return fmt.Errorf("selected network mode %q does not match profile mode %q", network.Mode, config.NetworkMode)
 	}
-	if len(config.Network.Ports) != 0 && config.NetworkMode != profile.NetworkModeOff && config.NetworkMode != profile.NetworkModeDirect {
+	if len(config.Network.Ports) != 0 && config.NetworkMode != profile.NetworkModeOff && config.NetworkMode != profile.NetworkModeDirect && config.NetworkMode != profile.NetworkModeProxy {
 		return fmt.Errorf("profile.network.port is not supported with network mode %q; refusing to ignore published ports", config.NetworkMode)
 	}
 	if config.NetworkMode == profile.NetworkModeDirect {
@@ -272,8 +295,15 @@ func validateSupportedProfile(config profile.EffectiveProfile, network NetworkRu
 		if network.activeBackend() != "proxy-tun" || network.ProxyAlias == "" {
 			return fmt.Errorf("proxy network mode requires the selected proxy TUN backend and a stored proxy alias")
 		}
-		if len(network.Resolver) == 0 {
-			return fmt.Errorf("proxy network mode requires an explicit IPv4 DNS configuration")
+		if string(network.Resolver) != "nameserver "+proxy.TransparentDNSAddress+"\n" {
+			return fmt.Errorf("proxy network mode requires the internal DNS endpoint routed through the TUN")
+		}
+		dnsAddress := net.ParseIP(network.ProxyDNSAddress)
+		if dnsAddress == nil || dnsAddress.To4() == nil || strings.Contains(network.ProxyDNSAddress, ":") {
+			return fmt.Errorf("proxy network mode requires an IPv4 DNS destination for the SOCKS data plane")
+		}
+		if len(config.Network.Ports) != 0 && (network.PortForwarder != "pasta" || network.ForwarderExecutable == "" || !network.EnforceEgressFilter) {
+			return fmt.Errorf("proxy mode with published ports requires explicit pasta ingress forwarding and an enforced egress filter")
 		}
 		return nil
 	}

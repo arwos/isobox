@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -59,16 +60,51 @@ func RunWithNetwork(command *exec.Cmd, network NetworkRuntime, rules []profile.P
 }
 
 type proxyTUNProcess struct {
-	tunnel *proxy.Tunnel
+	tunnel    *proxy.Tunnel
+	forwarder managedNetworkProcess
+	done      chan struct{}
+	once      sync.Once
+	mu        sync.Mutex
+	waitErr   error
+}
+
+func newProxyTUNProcess(tunnel *proxy.Tunnel, forwarder managedNetworkProcess) *proxyTUNProcess {
+	process := &proxyTUNProcess{tunnel: tunnel, forwarder: forwarder, done: make(chan struct{})}
+	go func() {
+		if forwarder == nil {
+			<-tunnel.Done()
+			process.finish(tunnel.Err())
+			return
+		}
+		select {
+		case <-tunnel.Done():
+			process.finish(tunnel.Err())
+		case <-forwarder.doneChannel():
+			process.finish(forwarder.error())
+		}
+	}()
+	return process
+}
+
+func (process *proxyTUNProcess) finish(err error) {
+	process.once.Do(func() {
+		if err == nil {
+			err = fmt.Errorf("proxy network component stopped unexpectedly")
+		}
+		process.mu.Lock()
+		process.waitErr = err
+		process.mu.Unlock()
+		close(process.done)
+	})
 }
 
 func (process *proxyTUNProcess) waitReady() error {
 	select {
-	case <-process.tunnel.Done():
-		if err := process.tunnel.Err(); err != nil {
+	case <-process.doneChannel():
+		if err := process.error(); err != nil {
 			return err
 		}
-		return fmt.Errorf("proxy TUN data plane stopped during startup")
+		return fmt.Errorf("proxy network component stopped during startup")
 	default:
 		return nil
 	}
@@ -76,16 +112,30 @@ func (process *proxyTUNProcess) waitReady() error {
 
 func (*proxyTUNProcess) configureForwards(rules []profile.PortRule) error {
 	if len(rules) != 0 {
-		return fmt.Errorf("proxy TUN does not accept host port forwards")
+		return fmt.Errorf("proxy ingress forwarding must be prepared before the application gate is released")
 	}
 	return nil
 }
 
-func (process *proxyTUNProcess) stop() { _ = process.tunnel.Close() }
+func (process *proxyTUNProcess) stop() {
+	if process == nil {
+		return
+	}
+	if process.tunnel != nil {
+		_ = process.tunnel.Close()
+	}
+	if process.forwarder != nil {
+		process.forwarder.stop()
+	}
+}
 
-func (process *proxyTUNProcess) doneChannel() <-chan struct{} { return process.tunnel.Done() }
+func (process *proxyTUNProcess) doneChannel() <-chan struct{} { return process.done }
 
-func (process *proxyTUNProcess) error() error { return process.tunnel.Err() }
+func (process *proxyTUNProcess) error() error {
+	process.mu.Lock()
+	defer process.mu.Unlock()
+	return process.waitErr
+}
 
 func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, requested profile.ResourceLimits, systemdRun string) (int, error) {
 	if command == nil {
@@ -102,9 +152,10 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 		return 0, fmt.Errorf("network supervisor requires a selected backend")
 	}
 	proxyTUN := network != nil && network.Mode == profile.NetworkModeProxy
+	proxyIngress := proxyTUN && len(rules) != 0
 	lateNetworkNamespace := network != nil && (network.Mode == profile.NetworkModeDirect || proxyTUN || network.Mode == profile.NetworkModeOff && len(rules) != 0)
 	bootstrapTaskSlack := uint64(0)
-	if network != nil && network.Mode == profile.NetworkModeOff && len(rules) != 0 {
+	if network != nil && (network.Mode == profile.NetworkModeOff && len(rules) != 0 || proxyIngress) {
 		bootstrapTaskSlack = limits.OffGuardBootstrapSlack(requested)
 	}
 	var hostNetworkNamespace uint64
@@ -112,7 +163,7 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 		var err error
 		hostNetworkNamespace, err = networkNamespaceInode("/proc/self/ns/net")
 		if err != nil {
-			return 0, fmt.Errorf("inspect host network namespace before off-mode launch: %w", err)
+			return 0, fmt.Errorf("inspect host network namespace before isolated-network launch: %w", err)
 		}
 	}
 	needsGate := network != nil || limits.Any(requested)
@@ -199,7 +250,7 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 				if gateWriter != nil {
 					_ = gateWriter.Close()
 				}
-				return 125, fmt.Errorf("off mode with published ports and process_count requires systemctl to remove temporary setup task allowance; install systemd or lower/remove process_count: %w", err)
+				return 125, fmt.Errorf("network mode %s with published ports and process_count requires systemctl to remove the temporary setup task allowance; install systemd or lower/remove process_count: %w", network.Mode, err)
 			}
 		}
 		command, scopeUnit, err = limits.ScopeCommand(command, systemdRun, requested, bootstrapTaskSlack)
@@ -258,10 +309,27 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 						applicationPID = networkPID
 						if err == nil {
 							var tunnel *proxy.Tunnel
-							tunnel, err = proxy.StartTUNTunnel(tunFile, network.ProxyAlias)
+							tunnel, err = proxy.StartTUNTunnel(tunFile, network.ProxyAlias, network.ProxyDNSAddress)
 							if err == nil {
-								forwarder = &proxyTUNProcess{tunnel: tunnel}
-								err = forwarder.waitReady()
+								var ingress managedNetworkProcess
+								if proxyIngress {
+									ingress, err = startPasta(network.ForwarderExecutable, networkPID, rules, network.Mode, nil, command.Stdout, command.Stderr)
+									if err == nil {
+										err = ingress.waitReady()
+									}
+									if err == nil {
+										err = proxyGate.PrepareIngress()
+									}
+								}
+								if err != nil {
+									if ingress != nil {
+										ingress.stop()
+									}
+									_ = tunnel.Close()
+								} else {
+									forwarder = newProxyTUNProcess(tunnel, ingress)
+									err = forwarder.waitReady()
+								}
 							}
 						}
 					} else if lateNetworkNamespace {

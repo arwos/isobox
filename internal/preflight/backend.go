@@ -75,11 +75,29 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 		selection.EnforceEgressFilter = true
 		return selection, nil
 	case profile.NetworkModeProxy:
-		if len(config.Network.Ports) != 0 {
-			return BackendSelection{}, fmt.Errorf("proxy mode with published ports needs the F05/F06 ingress path to be combined with the SOCKS TUN; that path is not available yet, so isobox refuses to start")
+		if len(config.Network.Ports) == 0 {
+			selection.Network = BackendProxyTUN
+			selection.PortForwarder = BackendNone
+			return selection, nil
+		}
+		if capabilities.Pasta == "" {
+			return BackendSelection{}, fmt.Errorf("proxy mode with published ports requires pasta's explicit ingress forwarding path; install passt (pasta) and retry")
+		}
+		if capabilities.PastaInspectionError != "" {
+			return BackendSelection{}, fmt.Errorf("cannot verify pasta's proxy ingress options: %s", capabilities.PastaInspectionError)
+		}
+		required := offPastaRequiredOptions(config.Network.Ports)
+		required = append(required, "--ns-ifname", "--address", "--gateway")
+		if !hasAllOptions(capabilities.PastaOptions, required...) {
+			return BackendSelection{}, fmt.Errorf("installed pasta lacks options required for proxy ingress forwarding and egress isolation; update passt and retry")
+		}
+		if err := validateHostForwards(config.Network.Ports); err != nil {
+			return BackendSelection{}, err
 		}
 		selection.Network = BackendProxyTUN
-		selection.PortForwarder = BackendNone
+		selection.PortForwarder = BackendPasta
+		selection.DisableAutomaticForwarding = true
+		selection.EnforceEgressFilter = true
 		return selection, nil
 	case profile.NetworkModeDirect:
 		// Continue below and select a direct network backend.

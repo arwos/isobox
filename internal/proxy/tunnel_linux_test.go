@@ -41,6 +41,29 @@ func TestIPv4Destination(t *testing.T) {
 	}
 }
 
+func TestTunnelRedirectsSyntheticDNSAddressToConfiguredResolver(t *testing.T) {
+	tunnel := &Tunnel{dnsAddress: "127.0.0.53"}
+	tests := []struct {
+		name    string
+		address tcpip.Address
+		port    uint16
+		want    string
+	}{
+		{name: "UDP DNS", address: tcpip.AddrFrom4([4]byte{10, 89, 0, 2}), port: 53, want: "127.0.0.53:53"},
+		{name: "TCP DNS", address: tcpip.AddrFrom4([4]byte{10, 89, 0, 2}), port: 53, want: "127.0.0.53:53"},
+		{name: "other port", address: tcpip.AddrFrom4([4]byte{10, 89, 0, 2}), port: 443, want: "10.89.0.2:443"},
+		{name: "other address", address: tcpip.AddrFrom4([4]byte{192, 0, 2, 53}), port: 53, want: "192.0.2.53:53"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := tunnel.destination(test.address, test.port)
+			if err != nil || got != test.want {
+				t.Fatalf("destination() = (%q, %v), want (%q, nil)", got, err, test.want)
+			}
+		})
+	}
+}
+
 func TestProxyTUNPacketFilter(t *testing.T) {
 	tests := []struct {
 		name    string

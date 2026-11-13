@@ -130,10 +130,11 @@ func TestBuildProxyNetworkUsesPrivateTUNHelperAndIPv4Resolver(t *testing.T) {
 		DNSServer:   "192.0.2.53",
 	}
 	command, err := BuildCommand("/usr/bin/bwrap", "", config, "/tmp/profile.unic", "test-app", []string{"/usr/bin/curl", "https://example.org"}, NetworkRuntime{
-		Mode:       profile.NetworkModeProxy,
-		Backend:    preflight.BackendProxyTUN,
-		ProxyAlias: "private-exit",
-		Resolver:   []byte("nameserver 192.0.2.53\n"),
+		Mode:            profile.NetworkModeProxy,
+		Backend:         preflight.BackendProxyTUN,
+		ProxyAlias:      "private-exit",
+		Resolver:        []byte("nameserver 10.89.0.2\n"),
+		ProxyDNSAddress: "192.0.2.53",
 	})
 	if err != nil {
 		t.Fatalf("BuildCommand() error = %v", err)
@@ -161,5 +162,48 @@ func TestBuildProxyNetworkUsesPrivateTUNHelperAndIPv4Resolver(t *testing.T) {
 	}
 	if len(command.ExtraFiles) != 1 {
 		t.Fatalf("proxy DNS data descriptors = %d, want one", len(command.ExtraFiles))
+	}
+}
+
+func TestBuildProxyNetworkWithPortsUsesGuardedIngressHelper(t *testing.T) {
+	config := profile.EffectiveProfile{
+		Profile: profile.Profile{
+			HomePath: t.TempDir(),
+			Network: profile.NetworkConfig{
+				Mode:       profile.NetworkModeProxy,
+				ProxyAlias: "private-exit",
+				Ports: []profile.PortRule{{
+					HostAddress: "127.0.0.1",
+					Port:        8123,
+					Protocol:    profile.PortProtocolTCP,
+				}},
+			},
+		},
+		NetworkMode: profile.NetworkModeProxy,
+		DNSServer:   "192.0.2.53",
+	}
+	command, err := BuildCommand("/usr/bin/bwrap", "/usr/sbin/nft", config, "/tmp/profile.unic", "test-app", []string{"/usr/bin/true"}, NetworkRuntime{
+		Mode:                profile.NetworkModeProxy,
+		Backend:             preflight.BackendProxyTUN,
+		PortForwarder:       preflight.BackendPasta,
+		ForwarderExecutable: "/usr/bin/pasta",
+		EnforceEgressFilter: true,
+		ProxyAlias:          "private-exit",
+		Resolver:            []byte("nameserver 10.89.0.2\n"),
+		ProxyDNSAddress:     "192.0.2.53",
+	})
+	if err != nil {
+		t.Fatalf("BuildCommand() error = %v", err)
+	}
+	defer closeExtraFiles(command.ExtraFiles)
+
+	args := strings.Join(command.Args, "\x00")
+	for _, required := range []string{
+		"--ro-bind\x00/usr/sbin/nft\x00" + internalOffGuardNFTPath,
+		internalProxyTUNCommand + "\x00--ingress-guard\x00" + internalOffGuardNFTPath + "\x00127.0.0.1/8123\x00-\x00--gate-path",
+	} {
+		if !strings.Contains(args, required) {
+			t.Errorf("BuildCommand() arguments omit %q: %q", required, command.Args)
+		}
 	}
 }

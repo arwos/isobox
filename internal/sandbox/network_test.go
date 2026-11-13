@@ -7,6 +7,7 @@ import (
 
 	"github.com/arwos/isobox/internal/preflight"
 	"github.com/arwos/isobox/internal/profile"
+	"github.com/arwos/isobox/internal/proxy"
 )
 
 func TestPrepareNetworkBuildsCompatibleSlirpFallback(t *testing.T) {
@@ -58,11 +59,38 @@ func TestPrepareNetworkBuildsProxyResolverWithoutExposingCredentials(t *testing.
 	if err != nil {
 		t.Fatalf("PrepareNetwork() error = %v", err)
 	}
-	if runtime.activeBackend() != preflight.BackendProxyTUN || runtime.ProxyAlias != "secure-exit" || string(runtime.Resolver) != "nameserver 192.0.2.53\n" {
-		t.Fatalf("proxy runtime = %#v, want proxy TUN, alias, and one IPv4 nameserver", runtime)
+	if runtime.activeBackend() != preflight.BackendProxyTUN || runtime.ProxyAlias != "secure-exit" || string(runtime.Resolver) != "nameserver "+proxy.TransparentDNSAddress+"\n" || runtime.ProxyDNSAddress != "192.0.2.53" {
+		t.Fatalf("proxy runtime = %#v, want proxy TUN, synthetic DNS endpoint, and selected IPv4 resolver", runtime)
 	}
 	if runtime.Executable != "" || runtime.Fallback != nil {
 		t.Fatalf("proxy runtime unexpectedly selected an executable or fallback: %#v", runtime)
+	}
+}
+
+func TestProxyResolverUsesFirstHostIPv4AddressWhenNoOverrideExists(t *testing.T) {
+	resolver, destination, err := proxyResolver(preflight.BackendSelection{
+		Mode:       profile.NetworkModeProxy,
+		Network:    preflight.BackendProxyTUN,
+		ProxyAlias: "secure-exit",
+		UseHostDNS: true,
+	}, []byte("nameserver 2001:db8::53\nnameserver 192.0.2.53\nnameserver 198.51.100.53\n"))
+	if err != nil {
+		t.Fatalf("proxyResolver() error = %v", err)
+	}
+	if string(resolver) != "nameserver "+proxy.TransparentDNSAddress+"\n" || destination != "192.0.2.53" {
+		t.Fatalf("proxy resolver = (%q, %q), want synthetic endpoint and the first IPv4 host resolver", resolver, destination)
+	}
+}
+
+func TestProxyResolverRequiresIPv4HostResolverWhenNoOverrideExists(t *testing.T) {
+	_, _, err := proxyResolver(preflight.BackendSelection{
+		Mode:       profile.NetworkModeProxy,
+		Network:    preflight.BackendProxyTUN,
+		ProxyAlias: "secure-exit",
+		UseHostDNS: true,
+	}, []byte("nameserver 2001:db8::53\n"))
+	if err == nil || !strings.Contains(err.Error(), "no usable IPv4 nameserver") {
+		t.Fatalf("proxyResolver() error = %v, want missing IPv4 host resolver", err)
 	}
 }
 

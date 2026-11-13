@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -84,6 +85,31 @@ func (gate *proxyTUNStartupGate) WaitForTUN(hostNamespace uint64, processPID int
 		return 0, nil, fmt.Errorf("wrap received proxy TUN descriptor")
 	}
 	return namespacePID, file, nil
+}
+
+// PrepareIngress asks the trusted in-namespace helper to install its marked
+// pasta return route after the host forwarder has configured the tap link.
+func (gate *proxyTUNStartupGate) PrepareIngress() error {
+	if gate == nil || gate.connection == nil {
+		return fmt.Errorf("proxy TUN startup gate is not connected")
+	}
+	if err := gate.connection.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(gate.connection, "forwarder-ready\n"); err != nil {
+		return fmt.Errorf("signal pasta ingress readiness: %w", err)
+	}
+	response := make([]byte, len("prepared\n"))
+	if _, err := io.ReadFull(gate.connection, response); err != nil {
+		return fmt.Errorf("read proxy ingress preparation result: %w", err)
+	}
+	if string(response) != "prepared\n" {
+		return fmt.Errorf("proxy ingress helper rejected pasta route setup")
+	}
+	if err := gate.connection.SetDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("clear proxy ingress startup deadline: %w", err)
+	}
+	return nil
 }
 
 func readProxyTUNDescriptor(connection *net.UnixConn) ([]byte, []int, error) {

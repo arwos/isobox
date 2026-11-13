@@ -8,10 +8,12 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/vishvananda/netlink"
@@ -41,7 +43,8 @@ func RunProxyTUNHelper(args []string) (int, bool) {
 	if len(args) == 0 || args[0] != internalProxyTUNCommand {
 		return 0, false
 	}
-	if len(args) < 5 || args[1] != "--gate-path" || args[2] != internalProxyTUNGatePath || args[3] != "--" || args[4] == "" {
+	ingressGuard, nftPath, tcpPorts, udpPorts, applicationIndex, ok := parseProxyTUNHelperArgs(args)
+	if !ok {
 		fmt.Fprintln(os.Stderr, "isobox: invalid internal proxy TUN helper arguments")
 		return 125, true
 	}
@@ -68,24 +71,40 @@ func RunProxyTUNHelper(args []string) (int, bool) {
 		return 125, true
 	}
 	defer tunFile.Close()
-	if err := clearAmbientCapabilities(); err != nil {
-		fmt.Fprintf(os.Stderr, "isobox: cannot clear temporary proxy TUN capabilities: %v\n", err)
-		return 125, true
+	if ingressGuard {
+		if err := enableNftCapabilityInheritance(); err != nil {
+			fmt.Fprintf(os.Stderr, "isobox: cannot pass firewall capability to nft: %v\n", err)
+			return 125, true
+		}
+		filterErr := installProxyIngressFilter(nftPath, tcpPorts, udpPorts)
+		if err := clearAmbientCapabilities(); err != nil {
+			fmt.Fprintf(os.Stderr, "isobox: cannot clear inherited firewall capabilities after nft: %v\n", err)
+			return 125, true
+		}
+		if filterErr != nil {
+			fmt.Fprintf(os.Stderr, "isobox: cannot install the proxy ingress egress filter: %v\n", filterErr)
+			return 125, true
+		}
+	} else {
+		if err := clearAmbientCapabilities(); err != nil {
+			fmt.Fprintf(os.Stderr, "isobox: cannot clear temporary proxy TUN capabilities: %v\n", err)
+			return 125, true
+		}
+		if err := dropCapabilities(); err != nil {
+			fmt.Fprintf(os.Stderr, "isobox: cannot drop temporary proxy TUN capabilities before startup: %v\n", err)
+			return 125, true
+		}
+		if err := installNamespaceSeccomp(); err != nil {
+			fmt.Fprintf(os.Stderr, "isobox: cannot prevent nested namespace creation before proxy application launch: %v\n", err)
+			return 125, true
+		}
 	}
-	if err := dropCapabilities(); err != nil {
-		fmt.Fprintf(os.Stderr, "isobox: cannot drop temporary proxy TUN capabilities before startup: %v\n", err)
-		return 125, true
-	}
-	if err := installNamespaceSeccomp(); err != nil {
-		fmt.Fprintf(os.Stderr, "isobox: cannot prevent nested namespace creation before proxy application launch: %v\n", err)
-		return 125, true
-	}
-	program, err := exec.LookPath(args[4])
+	program, err := exec.LookPath(args[applicationIndex])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "isobox: application executable %q cannot be found inside the sandbox: %v\n", args[4], err)
+		fmt.Fprintf(os.Stderr, "isobox: application executable %q cannot be found inside the sandbox: %v\n", args[applicationIndex], err)
 		return 127, true
 	}
-	gate, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: args[2], Net: "unix"})
+	gate, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: internalProxyTUNGatePath, Net: "unix"})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "isobox: cannot connect to the proxy TUN startup gate: %v\n", err)
 		return 125, true
@@ -95,6 +114,33 @@ func RunProxyTUNHelper(args []string) (int, bool) {
 		fmt.Fprintf(os.Stderr, "isobox: cannot send the TUN descriptor to the host supervisor: %v\n", err)
 		return 125, true
 	}
+	if ingressGuard {
+		if err := waitForProxyIngressReady(gate); err != nil {
+			fmt.Fprintf(os.Stderr, "isobox: proxy ingress forwarding was not ready: %v\n", err)
+			return 125, true
+		}
+		if err := configureProxyIngressRouting(); err != nil {
+			_, _ = io.WriteString(gate, "rejected\n")
+			fmt.Fprintf(os.Stderr, "isobox: cannot install the marked-only pasta return route: %v\n", err)
+			return 125, true
+		}
+		if _, err := io.WriteString(gate, "prepared\n"); err != nil {
+			fmt.Fprintf(os.Stderr, "isobox: cannot confirm proxy ingress route setup: %v\n", err)
+			return 125, true
+		}
+		if err := clearAmbientCapabilities(); err != nil {
+			fmt.Fprintf(os.Stderr, "isobox: cannot clear temporary proxy ingress capabilities: %v\n", err)
+			return 125, true
+		}
+		if err := dropCapabilities(); err != nil {
+			fmt.Fprintf(os.Stderr, "isobox: cannot drop temporary proxy ingress capabilities before startup: %v\n", err)
+			return 125, true
+		}
+		if err := installNamespaceSeccomp(); err != nil {
+			fmt.Fprintf(os.Stderr, "isobox: cannot prevent nested namespace creation before proxy application launch: %v\n", err)
+			return 125, true
+		}
+	}
 	if err := waitForStartupGate(gate); err != nil {
 		fmt.Fprintf(os.Stderr, "isobox: proxy TUN startup was aborted: %v\n", err)
 		return 125, true
@@ -103,11 +149,56 @@ func RunProxyTUNHelper(args []string) (int, bool) {
 		fmt.Fprintf(os.Stderr, "isobox: cannot remove the internal Go runtime setting before application launch: %v\n", err)
 		return 125, true
 	}
-	if err := syscall.Exec(program, args[4:], os.Environ()); err != nil {
-		fmt.Fprintf(os.Stderr, "isobox: cannot execute application %q: %v\n", args[4], err)
+	if err := syscall.Exec(program, args[applicationIndex:], os.Environ()); err != nil {
+		fmt.Fprintf(os.Stderr, "isobox: cannot execute application %q: %v\n", args[applicationIndex], err)
 		return 126, true
 	}
 	return 0, true
+}
+
+func parseProxyTUNHelperArgs(args []string) (bool, string, []string, []string, int, bool) {
+	if len(args) < 5 || args[0] != internalProxyTUNCommand {
+		return false, "", nil, nil, 0, false
+	}
+	index := 1
+	var nftPath string
+	var tcpPorts, udpPorts []string
+	ingressGuard := false
+	if args[index] == "--ingress-guard" {
+		if len(args) < 9 || !filepath.IsAbs(args[index+1]) {
+			return false, "", nil, nil, 0, false
+		}
+		var err error
+		tcpPorts, err = parsePortSet(args[index+2])
+		if err != nil {
+			return false, "", nil, nil, 0, false
+		}
+		udpPorts, err = parsePortSet(args[index+3])
+		if err != nil || (len(tcpPorts) == 0 && len(udpPorts) == 0) {
+			return false, "", nil, nil, 0, false
+		}
+		ingressGuard = true
+		nftPath = args[index+1]
+		index += 4
+	}
+	if len(args) <= index+3 || args[index] != "--gate-path" || args[index+1] != internalProxyTUNGatePath || args[index+2] != "--" || args[index+3] == "" {
+		return false, "", nil, nil, 0, false
+	}
+	return ingressGuard, nftPath, tcpPorts, udpPorts, index + 3, true
+}
+
+func waitForProxyIngressReady(gate net.Conn) error {
+	if err := gate.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return err
+	}
+	message := make([]byte, len("forwarder-ready\n"))
+	if _, err := io.ReadFull(gate, message); err != nil {
+		return err
+	}
+	if string(message) != "forwarder-ready\n" {
+		return fmt.Errorf("host sent an invalid pasta readiness message")
+	}
+	return gate.SetDeadline(time.Time{})
 }
 
 func verifyProxyTUNCapabilities() error {

@@ -8,19 +8,23 @@ import (
 
 	"github.com/arwos/isobox/internal/preflight"
 	"github.com/arwos/isobox/internal/profile"
+	"github.com/arwos/isobox/internal/proxy"
 )
 
 // NetworkRuntime is the selected backend and the launch data shared by the
 // bubblewrap builder and network-process supervisor.
 type NetworkRuntime struct {
-	Mode           profile.NetworkMode
-	Backend        preflight.BackendKind
-	PortForwarder  preflight.BackendKind
-	Executable     string
-	Resolver       []byte
-	ProxyAlias     string
-	PastaDNSArgs   []string
-	FallbackReason string
+	Mode                profile.NetworkMode
+	Backend             preflight.BackendKind
+	PortForwarder       preflight.BackendKind
+	Executable          string
+	ForwarderExecutable string
+	Resolver            []byte
+	ProxyDNSAddress     string
+	ProxyAlias          string
+	EnforceEgressFilter bool
+	PastaDNSArgs        []string
+	FallbackReason      string
 	// Fallback is a prevalidated direct backend attempted before bwrap's gate opens.
 	Fallback *NetworkRuntime
 }
@@ -36,11 +40,12 @@ func (runtime NetworkRuntime) activeBackend() preflight.BackendKind {
 // resolver configuration used by bwrap and the network backend.
 func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath string) (NetworkRuntime, error) {
 	runtime := NetworkRuntime{
-		Mode:           selection.Mode,
-		Backend:        selection.Network,
-		PortForwarder:  selection.PortForwarder,
-		ProxyAlias:     selection.ProxyAlias,
-		FallbackReason: selection.FallbackReason,
+		Mode:                selection.Mode,
+		Backend:             selection.Network,
+		PortForwarder:       selection.PortForwarder,
+		EnforceEgressFilter: selection.EnforceEgressFilter,
+		ProxyAlias:          selection.ProxyAlias,
+		FallbackReason:      selection.FallbackReason,
 	}
 	backend := runtime.activeBackend()
 	switch backend {
@@ -57,11 +62,26 @@ func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath s
 		if runtime.ProxyAlias == "" {
 			return NetworkRuntime{}, fmt.Errorf("proxy network mode requires a configured proxy alias")
 		}
-		address := net.ParseIP(selection.DNSAddress)
-		if address == nil || address.To4() == nil || strings.Contains(selection.DNSAddress, ":") {
-			return NetworkRuntime{}, fmt.Errorf("proxy network mode requires an explicit IPv4 DNS server")
+		var hostResolver []byte
+		if selection.UseHostDNS || selection.DNSAddress == "" {
+			var readErr error
+			hostResolver, readErr = os.ReadFile("/etc/resolv.conf")
+			if readErr != nil {
+				return NetworkRuntime{}, fmt.Errorf("read host DNS configuration for proxy mode: %w", readErr)
+			}
 		}
-		runtime.Resolver = []byte("nameserver " + address.To4().String() + "\n")
+		resolver, dnsAddress, err := proxyResolver(selection, hostResolver)
+		if err != nil {
+			return NetworkRuntime{}, err
+		}
+		runtime.Resolver = resolver
+		runtime.ProxyDNSAddress = dnsAddress
+		if selection.PortForwarder == preflight.BackendPasta {
+			runtime.ForwarderExecutable = pastaPath
+			if runtime.ForwarderExecutable == "" {
+				return NetworkRuntime{}, fmt.Errorf("selected proxy ingress forwarder pasta has no executable")
+			}
+		}
 		return runtime, nil
 	default:
 		return NetworkRuntime{}, fmt.Errorf("unsupported selected network backend %q", backend)
@@ -105,6 +125,22 @@ func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath s
 		runtime.Fallback = &fallback
 	}
 	return runtime, nil
+}
+
+func proxyResolver(selection preflight.BackendSelection, hostResolver []byte) ([]byte, string, error) {
+	addressText := selection.DNSAddress
+	if selection.UseHostDNS || addressText == "" {
+		nameservers := hostIPv4Nameservers(string(hostResolver))
+		if len(nameservers) == 0 {
+			return nil, "", fmt.Errorf("host DNS configuration contains no usable IPv4 nameserver for proxy mode; set profile.network.dns or settings.defaults.dns")
+		}
+		addressText = nameservers[0].String()
+	}
+	address := net.ParseIP(addressText)
+	if address == nil || address.To4() == nil || strings.Contains(addressText, ":") {
+		return nil, "", fmt.Errorf("proxy mode DNS server %q is not IPv4; IPv6 is disabled", addressText)
+	}
+	return []byte("nameserver " + proxy.TransparentDNSAddress + "\n"), address.To4().String(), nil
 }
 
 func combineResolverConfigs(primary, fallback []byte) []byte {

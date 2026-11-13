@@ -232,6 +232,42 @@ func TestSelectBackendProxyRequiresOnlyProxyTUNAndPreservesProfileAlias(t *testi
 	}
 }
 
+func TestSelectBackendProxyPortsRequirePastaAndEgressGuard(t *testing.T) {
+	config := profile.EffectiveProfile{
+		Profile: profile.Profile{Network: profile.NetworkConfig{
+			Mode:       profile.NetworkModeProxy,
+			ProxyAlias: "secure-exit",
+			Ports: []profile.PortRule{{
+				HostAddress: "127.0.0.1",
+				Port:        8123,
+				Protocol:    profile.PortProtocolTCP,
+			}},
+		}},
+		NetworkMode: profile.NetworkModeProxy,
+		DNSServer:   "192.0.2.53",
+	}
+	capabilities := Capabilities{
+		Pasta: "/usr/bin/pasta",
+		PastaOptions: testOptionSet(
+			"--config-net", "--address", "--gateway", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns",
+			"--ns-ifname", "--no-splice", "--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra",
+			"--ipv4-only", "--pid", "--quiet", "--foreground", "--no-udp",
+		),
+	}
+	selection, err := SelectBackend(config, capabilities)
+	if err != nil {
+		t.Fatalf("SelectBackend() error = %v", err)
+	}
+	if selection.Network != BackendProxyTUN || selection.PortForwarder != BackendPasta || !selection.DisableAutomaticForwarding || !selection.EnforceEgressFilter {
+		t.Fatalf("proxy selection = %#v, want TUN with explicit guarded pasta ingress", selection)
+	}
+
+	capabilities.PastaOptions = testOptionSet("--config-net", "--address", "--gateway", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns")
+	if _, err := SelectBackend(config, capabilities); err == nil || !strings.Contains(err.Error(), "lacks options required for proxy ingress") {
+		t.Fatalf("SelectBackend() without isolation flags error = %v, want fail-closed rejection", err)
+	}
+}
+
 func directTestProfile(ports []profile.PortRule) profile.EffectiveProfile {
 	return profile.EffectiveProfile{
 		NetworkMode: profile.NetworkModeDirect,

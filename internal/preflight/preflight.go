@@ -43,9 +43,12 @@ type optionProbe struct {
 // the parser validates the flag without starting a network process.
 var pastaOptionProbes = []optionProbe{
 	{option: "--config-net", args: []string{"--config-net"}},
+	{option: "--address", args: []string{"--address=10.89.1.2/24"}},
+	{option: "--gateway", args: []string{"--gateway=10.89.1.1"}},
 	{option: "--udp-ports", args: []string{"--udp-ports=none"}},
 	{option: "--tcp-ns", args: []string{"--tcp-ns=none"}},
 	{option: "--udp-ns", args: []string{"--udp-ns=none"}},
+	{option: "--ns-ifname", args: []string{"--ns-ifname=isoboxp0"}},
 	{option: "--no-splice", args: []string{"--no-splice"}},
 	{option: "--no-dhcp", args: []string{"--no-dhcp"}},
 	{option: "--no-dhcpv6", args: []string{"--no-dhcpv6"}},
@@ -86,7 +89,7 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 
 	capabilities.Pasta, _ = exec.LookPath("pasta")
 	capabilities.Slirp4netns, _ = exec.LookPath("slirp4netns")
-	needsNetworkBackend := config.NetworkMode != profile.NetworkModeOff || len(config.Network.Ports) != 0
+	needsNetworkBackend := config.NetworkMode == profile.NetworkModeDirect || len(config.Network.Ports) != 0
 	if needsNetworkBackend && capabilities.Pasta == "" && capabilities.Slirp4netns == "" {
 		issues = append(issues, "neither pasta nor slirp4netns was found in PATH; install passt (pasta) or slirp4netns and retry")
 	}
@@ -100,10 +103,11 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 	if err != nil {
 		issues = append(issues, fmt.Sprintf("network backend cannot preserve the profile: %v", err))
 	}
-	if config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) != 0 {
+	requiresIngressGuard := (config.NetworkMode == profile.NetworkModeOff || config.NetworkMode == profile.NetworkModeProxy) && len(config.Network.Ports) != 0
+	if requiresIngressGuard {
 		capabilities.NFT, err = exec.LookPath("nft")
 		if err != nil {
-			issues = append(issues, "network mode off with published ports requires nftables (nft) to enforce the egress filter; install nftables and retry")
+			issues = append(issues, fmt.Sprintf("network mode %s with published ports requires nftables (nft) to enforce the egress filter; install nftables and retry", config.NetworkMode))
 		} else if nftPath, resolveErr := filepath.EvalSymlinks(capabilities.NFT); resolveErr != nil {
 			issues = append(issues, fmt.Sprintf("cannot resolve nft executable %q: %v", capabilities.NFT, resolveErr))
 		} else if !isSandboxSystemPath(nftPath) {
@@ -115,7 +119,7 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 			options, inspectErr := inspectOptions(capabilities.Bubblewrap)
 			if inspectErr != "" {
 				issues = append(issues, fmt.Sprintf("cannot verify bwrap network-guard options: %s", inspectErr))
-			} else if !hasAllOptions(options, "--cap-add", "--block-fd", "--disable-userns", "--assert-userns-disabled") {
+			} else if config.NetworkMode == profile.NetworkModeOff && !hasAllOptions(options, "--cap-add", "--block-fd", "--disable-userns", "--assert-userns-disabled") {
 				issues = append(issues, "installed bwrap lacks the options required for the off-mode egress guard; update bubblewrap and retry")
 			}
 		}
@@ -131,6 +135,14 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 				issues = append(issues, fmt.Sprintf("cannot verify bwrap proxy TUN setup options: %s", inspectErr))
 			} else if !hasAllOptions(options, "--cap-add", "--dev-bind", "--ro-bind-data", "--json-status-fd", "--disable-userns", "--assert-userns-disabled") {
 				issues = append(issues, "installed bwrap lacks options required to create the proxy TUN interface and hold application startup until SOCKS5 is ready; update bubblewrap and retry")
+			}
+		}
+		if len(config.Network.Ports) != 0 && capabilities.Bubblewrap != "" {
+			options, inspectErr := inspectOptions(capabilities.Bubblewrap)
+			if inspectErr != "" {
+				issues = append(issues, fmt.Sprintf("cannot verify bwrap proxy ingress-guard options: %s", inspectErr))
+			} else if !hasAllOptions(options, "--cap-add", "--disable-userns", "--assert-userns-disabled") {
+				issues = append(issues, "installed bwrap lacks options required for the proxy ingress egress guard; update bubblewrap and retry")
 			}
 		}
 	}
@@ -150,9 +162,9 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 			issues = append(issues, "installed bwrap lacks the capability option required to disable IPv6 before the application starts; update bubblewrap and retry")
 		}
 	}
-	if config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) != 0 && config.Limits.ProcessCount != 0 {
+	if (config.NetworkMode == profile.NetworkModeOff || config.NetworkMode == profile.NetworkModeProxy) && len(config.Network.Ports) != 0 && config.Limits.ProcessCount != 0 {
 		if _, err := exec.LookPath("systemctl"); err != nil {
-			issues = append(issues, "off mode with published ports and process_count requires systemctl to remove the temporary firewall-setup task allowance before application startup; install systemd or remove process_count")
+			issues = append(issues, fmt.Sprintf("network mode %s with published ports and process_count requires systemctl to remove the temporary firewall-setup task allowance before application startup; install systemd or remove process_count", config.NetworkMode))
 		}
 	}
 

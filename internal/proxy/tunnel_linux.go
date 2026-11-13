@@ -34,38 +34,47 @@ const (
 	tunnelUDPIdleTimeout   = 90 * time.Second
 	tunnelProbeTimeout     = 12 * time.Second
 	tunnelUDPBufferLength  = 65507
+	// TransparentDNSAddress is routed into the TUN and mapped to dnsAddress.
+	TransparentDNSAddress = "10.89.0.2"
 )
 
 // Tunnel owns the IPv4-only user-space stack attached to tunFile. Credentials
 // remain inside the proxy package; callers receive only lifecycle methods.
 type Tunnel struct {
-	tunFile   *os.File
-	stack     *stack.Stack
-	link      *channel.Endpoint
-	client    *socks5Client
-	ctx       context.Context
-	cancel    context.CancelFunc
-	deviceCtx context.Context
-	deviceEnd context.CancelFunc
-	flows     chan struct{}
-	done      chan struct{}
-	readDone  chan struct{}
-	doneOnce  sync.Once
-	closeOnce sync.Once
-	flowWG    sync.WaitGroup
-	deviceWG  sync.WaitGroup
-	flowMu    sync.Mutex
-	closing   bool
-	mu        sync.RWMutex
-	err       error
+	tunFile    *os.File
+	stack      *stack.Stack
+	link       *channel.Endpoint
+	client     *socks5Client
+	dnsAddress string
+	ctx        context.Context
+	cancel     context.CancelFunc
+	deviceCtx  context.Context
+	deviceEnd  context.CancelFunc
+	flows      chan struct{}
+	done       chan struct{}
+	readDone   chan struct{}
+	doneOnce   sync.Once
+	closeOnce  sync.Once
+	flowWG     sync.WaitGroup
+	deviceWG   sync.WaitGroup
+	flowMu     sync.Mutex
+	closing    bool
+	mu         sync.RWMutex
+	err        error
 }
 
-// StartTUNTunnel takes ownership of tunFile on both success and failure. It
-// verifies TCP authentication and SOCKS5 UDP ASSOCIATE before returning, so
-// the sandbox startup gate can stay closed when the proxy is unavailable.
-func StartTUNTunnel(tunFile *os.File, alias string) (*Tunnel, error) {
+// StartTUNTunnel takes ownership of tunFile on both success and failure.
+// dnsAddress is the selected IPv4 resolver mapped from TransparentDNSAddress.
+// It verifies TCP authentication and SOCKS5 UDP ASSOCIATE before returning,
+// so the sandbox startup gate can stay closed when the proxy is unavailable.
+func StartTUNTunnel(tunFile *os.File, alias, dnsAddress string) (*Tunnel, error) {
 	if tunFile == nil {
 		return nil, fmt.Errorf("proxy TUN descriptor is required")
+	}
+	parsedDNS := net.ParseIP(dnsAddress)
+	if parsedDNS == nil || parsedDNS.To4() == nil {
+		_ = tunFile.Close()
+		return nil, fmt.Errorf("proxy DNS destination must be an IPv4 address")
 	}
 	config, err := loadRuntimeConfig(alias)
 	if err != nil {
@@ -81,15 +90,16 @@ func StartTUNTunnel(tunFile *os.File, alias string) (*Tunnel, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	deviceCtx, deviceEnd := context.WithCancel(context.Background())
 	tunnel := &Tunnel{
-		tunFile:   tunFile,
-		client:    client,
-		ctx:       ctx,
-		cancel:    cancel,
-		deviceCtx: deviceCtx,
-		deviceEnd: deviceEnd,
-		flows:     make(chan struct{}, tunnelMaxFlows),
-		done:      make(chan struct{}),
-		readDone:  make(chan struct{}),
+		tunFile:    tunFile,
+		client:     client,
+		dnsAddress: parsedDNS.To4().String(),
+		ctx:        ctx,
+		cancel:     cancel,
+		deviceCtx:  deviceCtx,
+		deviceEnd:  deviceEnd,
+		flows:      make(chan struct{}, tunnelMaxFlows),
+		done:       make(chan struct{}),
+		readDone:   make(chan struct{}),
 	}
 	if err := tunnel.openStack(); err != nil {
 		cancel()
@@ -233,7 +243,7 @@ func (tunnel *Tunnel) handleTCP(request *tcp.ForwarderRequest) {
 		return
 	}
 	connectionID := request.ID()
-	destination, err := ipv4Destination(connectionID.LocalAddress, connectionID.LocalPort)
+	destination, err := tunnel.destination(connectionID.LocalAddress, connectionID.LocalPort)
 	if err != nil {
 		tunnel.releaseFlow()
 		request.Complete(true)
@@ -266,7 +276,7 @@ func (tunnel *Tunnel) handleUDP(request *udp.ForwarderRequest) bool {
 		return false
 	}
 	connectionID := request.ID()
-	destination, err := ipv4Destination(connectionID.LocalAddress, connectionID.LocalPort)
+	destination, err := tunnel.destination(connectionID.LocalAddress, connectionID.LocalPort)
 	if err != nil {
 		tunnel.releaseFlow()
 		return false
@@ -536,4 +546,14 @@ func ipv4Destination(address tcpip.Address, port uint16) (string, error) {
 		return "", fmt.Errorf("TUN destination is not IPv4")
 	}
 	return net.JoinHostPort(host, strconv.Itoa(int(port))), nil
+}
+
+func (tunnel *Tunnel) destination(address tcpip.Address, port uint16) (string, error) {
+	if tunnel != nil && address.String() == TransparentDNSAddress && port == 53 {
+		if ip := net.ParseIP(tunnel.dnsAddress); ip == nil || ip.To4() == nil {
+			return "", fmt.Errorf("proxy DNS destination is not IPv4")
+		}
+		return net.JoinHostPort(tunnel.dnsAddress, "53"), nil
+	}
+	return ipv4Destination(address, port)
 }

@@ -40,6 +40,39 @@ func TestNetworkBackendsUseIPv4Only(t *testing.T) {
 		}
 	})
 
+	t.Run("proxy ingress pasta", func(t *testing.T) {
+		argsPath := filepath.Join(t.TempDir(), "pasta-args")
+		helperPath := filepath.Join(t.TempDir(), "pasta")
+		t.Setenv("ISOBOX_TEST_ARGS", argsPath)
+		if err := os.WriteFile(helperPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ISOBOX_TEST_ARGS\"\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+
+		process, err := startPasta(helperPath, 1234, []profile.PortRule{{
+			HostAddress: "127.0.0.1", Port: 8123, Protocol: profile.PortProtocolTCP,
+		}}, profile.NetworkModeProxy, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("startPasta() error = %v", err)
+		}
+		defer process.stop()
+		<-process.done
+
+		args, err := os.ReadFile(argsPath)
+		if err != nil {
+			t.Fatalf("read pasta arguments: %v", err)
+		}
+		for _, expected := range []string{"--ns-ifname=isoboxp0", "--address=10.89.1.2/24", "--gateway=10.89.1.1", "--no-splice", "--no-icmp", "--no-udp", "--ipv4-only", "--tcp-ports=127.0.0.1/8123", "--udp-ports=none"} {
+			if !containsLine(string(args), expected) {
+				t.Errorf("pasta arguments %q omit %q", args, expected)
+			}
+		}
+		for _, forbidden := range []string{"--tcp-ports=auto", "--udp-ports=auto", "--enable-ipv6"} {
+			if containsLine(string(args), forbidden) {
+				t.Errorf("pasta arguments include forbidden option %q: %q", forbidden, args)
+			}
+		}
+	})
+
 	t.Run("slirp4netns", func(t *testing.T) {
 		argsPath := filepath.Join(t.TempDir(), "slirp-args")
 		helperPath := filepath.Join(t.TempDir(), "slirp4netns")

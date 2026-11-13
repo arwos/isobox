@@ -16,7 +16,7 @@ const (
 )
 
 // OffGuardBootstrapSlack reserves enough transient tasks for the trusted Go
-// firewall helper and nft process, then is removed before the app gate opens.
+// network-guard helper and nft process, then is removed before the app gate opens.
 func OffGuardBootstrapSlack(request profile.ResourceLimits) uint64 {
 	if request.ProcessCount == 0 || request.ProcessCount > ^uint64(0)-bwrapSupervisorTasks {
 		return 0

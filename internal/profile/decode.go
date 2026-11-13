@@ -180,9 +180,6 @@ func ResolveProfile(profile Profile, settings Settings) (EffectiveProfile, error
 		if profile.Network.ProxyAlias == "" {
 			return EffectiveProfile{}, fmt.Errorf("profile.network.proxy_alias: required because the effective network mode is proxy")
 		}
-		if dns == "" {
-			return EffectiveProfile{}, fmt.Errorf("network.dns: required in proxy mode; set profile.network.dns or settings.defaults.dns so DNS cannot fall back to the host")
-		}
 	}
 	return EffectiveProfile{
 		Profile:     profile,

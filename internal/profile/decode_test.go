@@ -127,3 +127,16 @@ func TestSettingsOverridesMergeByFieldBeforeProfile(t *testing.T) {
 		t.Errorf("effective DNS = %q, want profile override", got.DNSServer)
 	}
 }
+
+func TestResolveProxyProfileAllowsHostDNSFallback(t *testing.T) {
+	got, err := ResolveProfile(Profile{
+		Version: SchemaVersion,
+		Network: NetworkConfig{Mode: NetworkModeProxy, ProxyAlias: "secure-exit"},
+	}, DefaultSettings())
+	if err != nil {
+		t.Fatalf("ResolveProfile() error = %v", err)
+	}
+	if got.DNSServer != "" {
+		t.Fatalf("effective DNS = %q, want unset for runtime host-resolver fallback", got.DNSServer)
+	}
+}

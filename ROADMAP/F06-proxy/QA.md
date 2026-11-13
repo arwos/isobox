@@ -50,7 +50,19 @@
 - `git diff --check` — без замечаний.
 - Unit-проверки подтверждают фильтр IPv4 TCP/UDP (IPv6, ICMP, raw protocol, malformed short packet отбрасываются), двунаправленный TCP bridge, завершение channel-backed packet workers и запрет новых flow после начала shutdown.
 
-Не проверено на runtime: `/dev/net/tun` отсутствует в текущем окружении; TUN interface setup, `SCM_RIGHTS` startup gate, bwrap helper capabilities/sysctl/seccomp, передача DNS/TCP/UDP через sing-box/Podman, packet capture на хосте, активный отказ proxy и опубликованные host ports. Дополнительную локальную проверку Unix control socket нельзя выполнить в sandbox: `net.ListenUnix`/`net.FileConn` возвращают `operation not permitted`. Proxy mode с опубликованными портами пока блокируется fail-closed. Поэтому F06-T03 помечен `[~]`; для завершения нужны runtime acceptance на обычном Linux host с доступным TUN и безопасный ingress-only forwarding path.
+Не проверено на runtime: `/dev/net/tun` отсутствует в текущем окружении; TUN interface setup, `SCM_RIGHTS` startup gate, bwrap helper capabilities/sysctl/seccomp, передача DNS/TCP/UDP через sing-box/Podman, packet capture на хосте, активный отказ proxy и опубликованные host ports. Дополнительную локальную проверку Unix control socket нельзя выполнить в sandbox: `net.ListenUnix`/`net.FileConn` возвращают `operation not permitted`. Guarded proxy ingress добавлен, но его поведение с pasta и nftables пока не подтверждено runtime-приёмкой. F06-T03 помечен `[~]` до такой проверки на обычном Linux host с доступным TUN.
+
+В последней итерации добавлены DNS fallback на первый IPv4 nameserver host `/etc/resolv.conf`, внутренний DNS endpoint `10.89.0.2` с заменой DNS destination перед SOCKS5, и guarded proxy ingress: pasta с фиксированным tap/gateway, nftables default-drop и marked policy route. Для proxy mode с портами startup gate ждёт готовности pasta sockets и подтверждения маршрутов от helper. Добавлены unit checks для DNS mapping, firewall rules, аргументов helper, BuildCommand и pasta options.
+
+- `gofmt -w internal/limits/limits.go internal/preflight/backend.go internal/preflight/backend_test.go internal/preflight/preflight.go internal/profile/decode.go internal/profile/decode_test.go internal/proxy/tunnel_linux.go internal/proxy/tunnel_linux_test.go internal/sandbox/build.go internal/sandbox/build_test.go internal/sandbox/forward_linux.go internal/sandbox/forward_linux_test.go internal/sandbox/network.go internal/sandbox/network_test.go internal/sandbox/run_linux.go internal/sandbox/tun_gate_linux.go internal/sandbox/tun_helper_linux.go internal/sandbox/proxy_ingress_linux.go internal/sandbox/proxy_ingress_linux_test.go` — прошло.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — прошло; GVM вывел предупреждение о read-only stat cache `/home/user/.gvm/.cache`.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go vet ./...` — прошло.
+- `git diff --check` — прошло.
+- `bash -n tests/f06-proxy/runtime/run.sh` и Python AST parse `echo.py`/`probe_app.py` — прошло.
+- Go unit tests в этой итерации не запускались; новые unit checks добавлены, но требуют запуска владельцем checkout.
+- `tests/f06-proxy/runtime/run.sh` добавлен для live acceptance, но здесь не запускался: среда не предоставляет `/dev/net/tun`, а rootless Podman ранее завершился из-за read-only `/run/user/1000/libpod`.
+
+Guarded ingress пока не имеет runtime acceptance: отсутствующий `/dev/net/tun` не позволяет запустить TUN/helper path в этой среде, а nftables policy route и pasta tap нужно проверить совместно на обычном Linux host. До этой проверки F06-T03 остаётся `[~]`. На целевом host запустите `./tests/f06-proxy/runtime/run.sh` и пришлите `result.txt`.
 
 ### F06-T04 — sing-box Podman fixture (частично)
 

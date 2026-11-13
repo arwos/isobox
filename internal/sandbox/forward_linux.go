@@ -39,7 +39,7 @@ type pastaProcess struct {
 
 func startPasta(pastaPath string, namespacePID int, rules []profile.PortRule, mode profile.NetworkMode, dnsArgs []string, stdout, stderr io.Writer) (*pastaProcess, error) {
 	if pastaPath == "" {
-		return nil, fmt.Errorf("pasta executable is required for direct network mode")
+		return nil, fmt.Errorf("pasta executable is required for the selected network mode")
 	}
 	if namespacePID <= 0 {
 		return nil, fmt.Errorf("bwrap did not report a valid namespace process ID")
@@ -53,6 +53,7 @@ func startPasta(pastaPath string, namespacePID int, rules []profile.PortRule, mo
 		return nil, err
 	}
 	offMode := mode == profile.NetworkModeOff
+	proxyIngress := mode == profile.NetworkModeProxy
 	if offMode && !hasTCP && !hasUDP {
 		return nil, fmt.Errorf("at least one TCP or UDP host port must be announced")
 	}
@@ -82,6 +83,22 @@ func startPasta(pastaPath string, namespacePID int, rules []profile.PortRule, mo
 	}
 	if offMode {
 		args = append(args, "--no-splice", "--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra")
+		if !hasTCP {
+			args = append(args, "--no-tcp")
+		}
+		if !hasUDP {
+			args = append(args, "--no-udp")
+		}
+	} else if proxyIngress {
+		// Proxy mode uses pasta only as a published-port ingress transport. Its
+		// fixed link and gateway are separated from the SOCKS TUN; a policy route
+		// installed by the trusted helper sends only marked replies through it.
+		args = append(args,
+			"--ns-ifname=isoboxp0",
+			"--address=10.89.1.2/24",
+			"--gateway=10.89.1.1",
+			"--no-splice", "--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra",
+		)
 		if !hasTCP {
 			args = append(args, "--no-tcp")
 		}
