@@ -94,9 +94,12 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	ipv4Setup := directNetwork || config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) == 0
 	activeBackend := network.activeBackend()
 	args := []string{"--unshare-user"}
+	// Proxy mode must keep its network namespace in the same user namespace
+	// that owns it so the trusted helper retains CAP_NET_ADMIN for IPv6/TUN
+	// setup. The helper installs namespace-blocking seccomp before app exec.
 	// The off-mode guard creates its netns after bwrap mounts: some bwrap
 	// setups enter a nested user namespace while preparing /dev.
-	if !offGuard {
+	if !offGuard && !proxyNetwork {
 		args = append(args, "--disable-userns", "--assert-userns-disabled")
 	}
 	args = append(args,

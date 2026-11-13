@@ -133,7 +133,7 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 			options, inspectErr := inspectOptions(capabilities.Bubblewrap)
 			if inspectErr != "" {
 				issues = append(issues, fmt.Sprintf("cannot verify bwrap proxy TUN setup options: %s", inspectErr))
-			} else if !hasAllOptions(options, "--cap-add", "--dev-bind", "--ro-bind-data", "--json-status-fd", "--disable-userns", "--assert-userns-disabled") {
+			} else if !hasAllOptions(options, "--cap-add", "--dev-bind", "--ro-bind-data", "--json-status-fd") {
 				issues = append(issues, "installed bwrap lacks options required to create the proxy TUN interface and hold application startup until SOCKS5 is ready; update bubblewrap and retry")
 			}
 		}
@@ -141,7 +141,7 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 			options, inspectErr := inspectOptions(capabilities.Bubblewrap)
 			if inspectErr != "" {
 				issues = append(issues, fmt.Sprintf("cannot verify bwrap proxy ingress-guard options: %s", inspectErr))
-			} else if !hasAllOptions(options, "--cap-add", "--disable-userns", "--assert-userns-disabled") {
+			} else if !hasAllOptions(options, "--cap-add") {
 				issues = append(issues, "installed bwrap lacks options required for the proxy ingress egress guard; update bubblewrap and retry")
 			}
 		}
@@ -257,8 +257,6 @@ func checkBubblewrap(path string) error {
 	output, err = exec.CommandContext(probeCtx, path,
 		"--unshare-user",
 		"--unshare-net",
-		"--disable-userns",
-		"--assert-userns-disabled",
 		"--ro-bind", string(filepath.Separator), string(filepath.Separator),
 		"--clearenv",
 		"--", "/bin/true",

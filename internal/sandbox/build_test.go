@@ -144,8 +144,6 @@ func TestBuildProxyNetworkUsesPrivateTUNHelperAndIPv4Resolver(t *testing.T) {
 	args := strings.Join(command.Args, "\x00")
 	for _, required := range []string{
 		"--unshare-net",
-		"--disable-userns",
-		"--assert-userns-disabled",
 		"--cap-add\x00CAP_NET_ADMIN",
 		"--dev-bind\x00/dev/net/tun\x00/dev/net/tun",
 		"--ro-bind-data\x003\x00/etc/resolv.conf",
@@ -155,9 +153,9 @@ func TestBuildProxyNetworkUsesPrivateTUNHelperAndIPv4Resolver(t *testing.T) {
 			t.Errorf("BuildCommand() arguments omit %q: %q", required, command.Args)
 		}
 	}
-	for _, forbidden := range []string{"--cap-add\x00CAP_SYS_ADMIN", "--block-fd", "private-exit"} {
+	for _, forbidden := range []string{"--disable-userns", "--assert-userns-disabled", "--cap-add\x00CAP_SYS_ADMIN", "--block-fd", "private-exit"} {
 		if strings.Contains(args, forbidden) {
-			t.Errorf("BuildCommand() includes %q; proxy credentials and alias belong to the host network component, not the application command", forbidden)
+			t.Errorf("BuildCommand() includes unexpected argument %q: %q", forbidden, command.Args)
 		}
 	}
 	if len(command.ExtraFiles) != 1 {

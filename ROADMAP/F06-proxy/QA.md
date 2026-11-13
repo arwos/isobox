@@ -62,7 +62,9 @@
 - Go unit tests в этой итерации не запускались; новые unit checks добавлены, но требуют запуска владельцем checkout.
 - `tests/f06-proxy/runtime/run.sh` добавлен для live acceptance, но здесь не запускался: среда не предоставляет `/dev/net/tun`, а rootless Podman ранее завершился из-за read-only `/run/user/1000/libpod`.
 
-Guarded ingress пока не имеет runtime acceptance: отсутствующий `/dev/net/tun` не позволяет запустить TUN/helper path в этой среде, а nftables policy route и pasta tap нужно проверить совместно на обычном Linux host. До этой проверки F06-T03 остаётся `[~]`. На целевом host запустите `./tests/f06-proxy/runtime/run.sh` и пришлите `result.txt`.
+Пользовательский отчёт `/tmp/isobox-test-results/f06-proxy-runtime.3mArip/result.txt` дошёл до запуска proxy helper, но runtime-приёмка остановилась до TUN setup: запись `/proc/sys/net/ipv6/conf/default/disable_ipv6` завершилась `permission denied`, а supervisor затем получил timeout startup gate. Причина — proxy запускал helper во вложенном user namespace после bwrap `--disable-userns`; его `CAP_NET_ADMIN` не относился к user namespace-владельцу network namespace. Исправлено: proxy mode оставляет helper в исходном user namespace и опирается на helper seccomp, который до `exec` приложения запрещает создание/переключение namespace. Direct/off настройки bwrap не менялись.
+
+После исправления выполнены `gofmt -w internal/sandbox/build.go internal/sandbox/build_test.go internal/preflight/preflight.go`; `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` завершился с exit 0 (GVM вывел предупреждение о read-only stat cache); такой же вызов `go vet ./...` завершился с exit 0; `git diff --check` прошёл. Go tests в этой итерации не запускались. Полная runtime acceptance — включая создание TUN, IPv6 sysctl, DNS/TCP/UDP через sing-box, negative egress capture и guarded ingress ports — ещё не пройдена. Повторите на целевом Linux host `./tests/f06-proxy/runtime/run.sh` и предоставьте новый `result.txt`.
 
 ### F06-T04 — sing-box Podman fixture (приёмка пройдена)
 
