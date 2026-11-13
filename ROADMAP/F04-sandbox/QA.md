@@ -30,6 +30,12 @@
 - F04-T03: `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — exit 0; GVM вывел предупреждение о read-only stat cache в `/home/user/.gvm/.cache`.
 - F04-T03: сверены официальные документы bubblewrap `--dev-bind`, Wayland socket environment, PipeWire socket names, PulseAudio cookie, D-Bus Unix addresses и Xauthority; ссылки зафиксированы в `CONTEXT.md`.
 
+- F04-T02: подготовлен runtime acceptance runner `./tests/run.sh f04-mount-home`; он собирает приложение и проверяет явные read-only/writable mounts, `home_path`, persistence/изоляцию managed HOME, права `0700` и fail-closed на отсутствующем mount source.
+- F04-T02: `bash -n tests/f04-sandbox/run.sh tests/run.sh` — успешно.
+- F04-T02: `python3 -c 'import ast; ast.parse(open("tests/f04-sandbox/probe.py", encoding="utf-8").read())'` — успешно.
+- F04-T02: `git diff --check` — без замечаний.
+- F04-T02: runtime runner не запускался в этой среде; приёмка bwrap mounts/HOME ожидает отчёт с целевого пользовательского хоста.
+
 Не проверялось:
 
 - `isobox run` не запускался, поэтому реальное чтение файлов из root, передача сигналов и коды exit status не проверены в runtime.

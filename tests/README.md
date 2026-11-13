@@ -18,6 +18,11 @@
 
 Оба сценария сохраняют полный отчёт в отдельном `result.txt`. В режиме `--smoke` сборка Go может скачать отсутствующие модули. Можно задать каталог отчётов через `ISOBOX_TEST_RESULTS` и путь к бинарнику через `ISOBOX_TEST_BINARY`.
 
+## Bwrap mounts и HOME
+
+- `./tests/run.sh f04-mount-home` — проверяет явные read-only/writable mounts, точный сохраняемый `home_path`, разделение управляемого HOME по профилю и `--app-id`, режим `0700` и fail-closed отказ для недоступного mount.
+- Нужны Go, Python 3, `bwrap`, пользовательские namespaces и настоящий `/tmp` со sticky bit. Запускайте от обычного пользователя, не через `sudo`.
+
 Для сетевых проверок нужны Linux, Go, Python 3, bubblewrap и доступные пользовательские namespaces. В зависимости от сценария нужны `pasta`, `slirp4netns` и `nft`. Полные direct-тесты проверяют внешний IPv4 DNS/TCP/UDP, поэтому требуют доступа в Интернет.
 
 ## Сценарии F05

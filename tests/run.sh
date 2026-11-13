@@ -10,6 +10,7 @@ Usage:
 Scenarios:
   host-info                 Collect host diagnostics only
   host-smoke                Build isobox and run /usr/bin/true with networking off
+  f04-mount-home            Check explicit mounts and persistent HOME
   profile-validation        Validate the checked-in UNIC network profiles
   pasta                     Run the pasta network acceptance scenario
   slirp4netns               Run the slirp4netns network acceptance scenario
@@ -50,6 +51,9 @@ case "$scenario" in
     host-smoke)
         script=tests/host-info/run.sh
         set -- --smoke "$@"
+        ;;
+    f04-mount-home)
+        script=tests/f04-sandbox/run.sh
         ;;
     profile-validation)
         script=tests/f05-network/profile-validation/run.sh
