@@ -61,6 +61,40 @@ func TestDecodeProfileRejectsMissingMountSource(t *testing.T) {
 	}
 }
 
+func TestDecodeProfileRejectsIPv6NetworkSettings(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{
+			name: "IPv6 DNS",
+			data: `version 1; network { mode direct; dns '2001:db8::53'; }`,
+		},
+		{
+			name: "IPv6 host bind",
+			data: `version 1; network { mode off; port { host_address '::1'; port 8080; } }`,
+		},
+		{
+			name: "IPv4-mapped IPv6 host bind",
+			data: `version 1; network { mode off; port { host_address '::ffff:192.0.2.10'; port 8080; } }`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := DecodeProfile([]byte(test.data)); err == nil || !strings.Contains(err.Error(), "IPv6 is disabled") {
+				t.Fatalf("DecodeProfile() error = %v, want IPv6-disabled validation error", err)
+			}
+		})
+	}
+}
+
+func TestSettingsRejectIPv6DNS(t *testing.T) {
+	_, err := ApplySettingsOverride(DefaultSettings(), []byte(`version 1; defaults { dns '2001:db8::53'; }`))
+	if err == nil || !strings.Contains(err.Error(), "IPv6 is disabled") {
+		t.Fatalf("ApplySettingsOverride() error = %v, want IPv6-disabled validation error", err)
+	}
+}
+
 func TestSettingsOverridesMergeByFieldBeforeProfile(t *testing.T) {
 	system, err := ApplySettingsOverride(DefaultSettings(), []byte(`
 		version 1;

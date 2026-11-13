@@ -15,6 +15,68 @@ import (
 	"github.com/arwos/isobox/internal/profile"
 )
 
+func TestNetworkBackendsUseIPv4Only(t *testing.T) {
+	t.Run("pasta", func(t *testing.T) {
+		argsPath := filepath.Join(t.TempDir(), "pasta-args")
+		helperPath := filepath.Join(t.TempDir(), "pasta")
+		t.Setenv("ISOBOX_TEST_ARGS", argsPath)
+		if err := os.WriteFile(helperPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ISOBOX_TEST_ARGS\"\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+
+		process, err := startPasta(helperPath, 1234, nil, profile.NetworkModeDirect, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("startPasta() error = %v", err)
+		}
+		defer process.stop()
+		<-process.done
+
+		args, err := os.ReadFile(argsPath)
+		if err != nil {
+			t.Fatalf("read pasta arguments: %v", err)
+		}
+		if !containsLine(string(args), "--ipv4-only") {
+			t.Fatalf("pasta arguments %q omit --ipv4-only", args)
+		}
+	})
+
+	t.Run("slirp4netns", func(t *testing.T) {
+		argsPath := filepath.Join(t.TempDir(), "slirp-args")
+		helperPath := filepath.Join(t.TempDir(), "slirp4netns")
+		t.Setenv("ISOBOX_TEST_ARGS", argsPath)
+		script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ISOBOX_TEST_ARGS\"\nprintf '1' >&3\nexec 3>&-\ncat <&4 >/dev/null\n"
+		if err := os.WriteFile(helperPath, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+
+		process, err := startSlirp(helperPath, 1234, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("startSlirp() error = %v", err)
+		}
+		defer process.stop()
+		if err := process.waitReady(); err != nil {
+			t.Fatalf("slirp waitReady() error = %v", err)
+		}
+
+		args, err := os.ReadFile(argsPath)
+		if err != nil {
+			t.Fatalf("read slirp4netns arguments: %v", err)
+		}
+		if containsLine(string(args), "--enable-ipv6") {
+			t.Fatalf("slirp4netns arguments %q enable IPv6", args)
+		}
+	})
+}
+
+func containsLine(text, want string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if line == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestPastaPIDFileReadyRequiresMatchingPID(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "ready.pid")
 	process := &pastaProcess{
@@ -45,15 +107,17 @@ func TestPastaPIDFileReadyRequiresMatchingPID(t *testing.T) {
 func TestPortForwardSpecs(t *testing.T) {
 	rules := []profile.PortRule{
 		{HostAddress: "127.0.0.1", Port: 80, Protocol: profile.PortProtocolTCP},
-		{HostAddress: "::1", Port: 9000, EndPort: 9002, Protocol: profile.PortProtocolUDP},
 		{HostAddress: "192.0.2.10", Port: 443, Protocol: profile.PortProtocolBoth},
 	}
 	tcp, udp, err := portForwardSpecs(rules)
 	if err != nil {
 		t.Fatalf("portForwardSpecs() error = %v", err)
 	}
-	if tcp != "127.0.0.1/80,192.0.2.10/443" || udp != "::1/9000-9002,192.0.2.10/443" {
+	if tcp != "127.0.0.1/80,192.0.2.10/443" || udp != "192.0.2.10/443" {
 		t.Fatalf("portForwardSpecs() = (%q, %q), want TCP and UDP profile rules", tcp, udp)
+	}
+	if _, _, err := portForwardSpecs([]profile.PortRule{{HostAddress: "::1", Port: 80, Protocol: profile.PortProtocolTCP}}); err == nil {
+		t.Fatal("portForwardSpecs() accepted an IPv6 host address")
 	}
 	if _, _, err := portForwardSpecs([]profile.PortRule{{
 		HostAddress: "127.0.0.1", Port: 80, Protocol: "invalid",
@@ -65,7 +129,6 @@ func TestPortForwardSpecs(t *testing.T) {
 func TestExpectedForwardedSockets(t *testing.T) {
 	rules := []profile.PortRule{
 		{HostAddress: "127.0.0.1", Port: 80, Protocol: profile.PortProtocolBoth},
-		{HostAddress: "::1", Port: 9000, EndPort: 9001, Protocol: profile.PortProtocolUDP},
 	}
 	got, hasTCP, hasUDP, err := expectedForwardedSockets(rules)
 	if err != nil {
@@ -74,11 +137,12 @@ func TestExpectedForwardedSockets(t *testing.T) {
 	want := map[string]struct{}{
 		"tcp|127.0.0.1|80": {},
 		"udp|127.0.0.1|80": {},
-		"udp|::1|9000":     {},
-		"udp|::1|9001":     {},
 	}
 	if !hasTCP || !hasUDP || !reflect.DeepEqual(got, want) {
 		t.Fatalf("expectedForwardedSockets() = (%#v, %t, %t), want (%#v, true, true)", got, hasTCP, hasUDP, want)
+	}
+	if _, _, _, err := expectedForwardedSockets([]profile.PortRule{{HostAddress: "::1", Port: 80, Protocol: profile.PortProtocolTCP}}); err == nil {
+		t.Fatal("expectedForwardedSockets() accepted an IPv6 host address")
 	}
 }
 
@@ -171,7 +235,7 @@ func TestExpandSlirpHostForwards(t *testing.T) {
 			rules: []profile.PortRule{{
 				HostAddress: "::1", Port: 80, Protocol: profile.PortProtocolTCP,
 			}},
-			wantErr: "not supported by slirp4netns",
+			wantErr: "must be IPv4; IPv6 is disabled",
 		},
 		{
 			name: "reject invalid protocol",
@@ -217,6 +281,10 @@ func TestSlirpHostForwardRequest(t *testing.T) {
 	}
 	if got.Execute != "add_hostfwd" || got.Arguments != forward {
 		t.Fatalf("slirp request = (%q, %#v), want (add_hostfwd, %#v)", got.Execute, got.Arguments, forward)
+	}
+	forward.HostAddr = "::1"
+	if _, err := slirpHostForwardRequest(forward); err == nil {
+		t.Fatal("slirpHostForwardRequest() accepted an IPv6 host address")
 	}
 }
 

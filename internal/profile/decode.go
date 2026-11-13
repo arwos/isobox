@@ -240,8 +240,9 @@ func validateAbsolutePath(field, value string) error {
 }
 
 func validateDNSAddress(field, value string) error {
-	if strings.TrimSpace(value) != value || net.ParseIP(value) == nil {
-		return fmt.Errorf("%s: must be an IPv4 or IPv6 address without a port", field)
+	address := net.ParseIP(value)
+	if strings.TrimSpace(value) != value || address == nil || address.To4() == nil || strings.Contains(value, ":") {
+		return fmt.Errorf("%s: must be an IPv4 address without a port; IPv6 is disabled", field)
 	}
 	return nil
 }
@@ -251,11 +252,11 @@ func validatePortRules(ports []PortRule) error {
 	for index, rule := range ports {
 		prefix := fmt.Sprintf("profile.network.port[%d]", index)
 		if strings.TrimSpace(rule.HostAddress) != rule.HostAddress {
-			return fmt.Errorf("%s.host_address: must be an IPv4 or IPv6 bind address", prefix)
+			return fmt.Errorf("%s.host_address: must be an IPv4 bind address; IPv6 is disabled", prefix)
 		}
 		parsed[index] = net.ParseIP(rule.HostAddress)
-		if parsed[index] == nil {
-			return fmt.Errorf("%s.host_address: must be an IPv4 or IPv6 bind address", prefix)
+		if parsed[index] == nil || parsed[index].To4() == nil || strings.Contains(rule.HostAddress, ":") {
+			return fmt.Errorf("%s.host_address: must be an IPv4 bind address; IPv6 is disabled", prefix)
 		}
 		if rule.Port == 0 {
 			return fmt.Errorf("%s.port: must be between 1 and 65535", prefix)

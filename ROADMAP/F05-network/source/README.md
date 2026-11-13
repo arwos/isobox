@@ -21,23 +21,24 @@ python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-live --backen
 Each direct-backend run checks both-protocol range forwarding, separate
 TCP-only and UDP-only single-port rules (including refusal of the other
 protocol), exact loopback host binding, and rejection of an unannounced port.
-Pasta runs also check a declared `::1` TCP+UDP host bind when pasta can select
-a routed IPv6 interface on the host. The test is skipped if pasta cannot select
-one from the host routes. The slirp run reports it as unsupported because its
-host-forward API is IPv4-only. The default slirp run also checks `off` egress
-isolation and fail-closed startup for `off` with ports when pasta is
-unavailable. Full runs check default and profile-selected DNS, outbound IPv4
-TCP/UDP, and external IPv6 when the host has an IPv6 default route. External
-checks use DNS lookups and connection handshakes only. Pass `--local-only` after
-the binary path to skip public DNS and Internet probes.
+Every mode also checks that only loopback may have an IPv6 address and that
+external IPv6 TCP/UDP cannot connect, regardless of host IPv6 routes. Pasta is
+started with `--ipv4-only`; slirp4netns is started without `--enable-ipv6`.
+Profile IPv6 DNS and host bind addresses must fail validation. The default
+slirp run also checks `off` egress isolation and fail-closed startup for `off`
+with ports when pasta is unavailable. Full runs check default and
+profile-selected IPv4 DNS and outbound IPv4 TCP/UDP. External checks use DNS
+lookups and connection handshakes only. Pass `--local-only` after the binary
+path to skip public IPv4 DNS and Internet probes; the IPv6-denial probes still
+run.
 
 `--simulate-pasta-failure` wraps the installed pasta binary so capability
 probes still use the real binary while runtime startup fails. This checks that
 isobox switches to a compatible slirp backend before opening the application
-gate. `--dns-only` runs just the default/profile DNS and outbound connectivity
-probes; combine it with simulated failure to check resolver fallback. Unit
-tests cover the case where both runtime backends fail before the application
-gate opens.
+gate. `--dns-only` runs default/profile IPv4 DNS, outbound IPv4 connectivity,
+and the IPv6-denial probe; combine it with simulated failure to check resolver
+fallback. Unit tests cover the case where both runtime backends fail before the
+application gate opens.
 
 It uses only Python's standard library and writes profiles, settings, HOME
 directories, and runtime state under a temporary directory.

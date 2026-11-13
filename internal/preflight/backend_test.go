@@ -32,27 +32,26 @@ func TestSelectBackend(t *testing.T) {
 			config: directTestProfile(nil),
 			capabilities: Capabilities{
 				Pasta:              "/usr/bin/pasta",
-				PastaOptions:       testOptionSet("--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns", "--quiet", "--foreground", "--pid", "--dns-forward", "--dns-host"),
+				PastaOptions:       testOptionSet("--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns", "--quiet", "--foreground", "--pid", "--dns-forward", "--dns-host", "--ipv4-only"),
 				Slirp4netns:        "/usr/bin/slirp4netns",
-				Slirp4netnsOptions: testOptionSet("--configure", "--enable-ipv6", "--ready-fd", "--exit-fd"),
+				Slirp4netnsOptions: testOptionSet("--configure", "--ready-fd", "--exit-fd"),
 			},
 			wantNetwork:   BackendPasta,
 			wantForwarder: BackendPasta,
 			wantFallback:  BackendSlirp4netns,
 		},
 		{
-			name: "direct does not offer slirp fallback for an IPv6 host bind",
+			name: "direct refuses IPv6 host bind even with pasta",
 			config: directTestProfile([]profile.PortRule{{
 				HostAddress: "::1", Port: 8123, Protocol: profile.PortProtocolTCP,
 			}}),
 			capabilities: Capabilities{
 				Pasta:              "/usr/bin/pasta",
-				PastaOptions:       testOptionSet("--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns", "--quiet", "--foreground", "--pid", "--dns-forward", "--dns-host"),
+				PastaOptions:       testOptionSet("--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns", "--quiet", "--foreground", "--pid", "--dns-forward", "--dns-host", "--ipv4-only"),
 				Slirp4netns:        "/usr/bin/slirp4netns",
-				Slirp4netnsOptions: testOptionSet("--configure", "--enable-ipv6", "--ready-fd", "--exit-fd", "--api-socket"),
+				Slirp4netnsOptions: testOptionSet("--configure", "--ready-fd", "--exit-fd", "--api-socket"),
 			},
-			wantNetwork:   BackendPasta,
-			wantForwarder: BackendPasta,
+			wantErr: "isobox networking is IPv4-only",
 		},
 		{
 			name: "direct does not offer slirp fallback for loopback DNS override",
@@ -63,9 +62,9 @@ func TestSelectBackend(t *testing.T) {
 			}(),
 			capabilities: Capabilities{
 				Pasta:              "/usr/bin/pasta",
-				PastaOptions:       testOptionSet("--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns", "--quiet", "--foreground", "--pid", "--dns-forward", "--dns-host"),
+				PastaOptions:       testOptionSet("--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns", "--quiet", "--foreground", "--pid", "--dns-forward", "--dns-host", "--ipv4-only"),
 				Slirp4netns:        "/usr/bin/slirp4netns",
-				Slirp4netnsOptions: testOptionSet("--configure", "--enable-ipv6", "--ready-fd", "--exit-fd"),
+				Slirp4netnsOptions: testOptionSet("--configure", "--ready-fd", "--exit-fd"),
 			},
 			wantNetwork:   BackendPasta,
 			wantForwarder: BackendPasta,
@@ -79,21 +78,21 @@ func TestSelectBackend(t *testing.T) {
 				Pasta:              "/usr/bin/pasta",
 				PastaOptions:       testOptionSet("--tcp-ports"),
 				Slirp4netns:        "/usr/bin/slirp4netns",
-				Slirp4netnsOptions: testOptionSet("--configure", "--enable-ipv6", "--ready-fd", "--exit-fd", "--api-socket"),
+				Slirp4netnsOptions: testOptionSet("--configure", "--ready-fd", "--exit-fd", "--api-socket"),
 			},
 			wantNetwork:   BackendSlirp4netns,
 			wantForwarder: BackendSlirp4netns,
 		},
 		{
-			name: "direct refuses IPv6 host forward on slirp",
+			name: "direct refuses IPv6 host forward without pasta",
 			config: directTestProfile([]profile.PortRule{{
 				HostAddress: "::1", Port: 8123, Protocol: profile.PortProtocolTCP,
 			}}),
 			capabilities: Capabilities{
 				Slirp4netns:        "/usr/bin/slirp4netns",
-				Slirp4netnsOptions: testOptionSet("--configure", "--enable-ipv6", "--ready-fd", "--exit-fd", "--api-socket"),
+				Slirp4netnsOptions: testOptionSet("--configure", "--ready-fd", "--exit-fd", "--api-socket"),
 			},
-			wantErr: "is IPv6",
+			wantErr: "isobox networking is IPv4-only",
 		},
 		{
 			name: "off with ports requires pasta firewall options",
@@ -104,7 +103,7 @@ func TestSelectBackend(t *testing.T) {
 				Pasta: "/usr/bin/pasta",
 				PastaOptions: testOptionSet(
 					"--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns", "--no-splice",
-					"--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra", "--quiet", "--foreground", "--pid",
+					"--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra", "--ipv4-only", "--quiet", "--foreground", "--pid",
 				),
 			},
 			wantNetwork:   BackendNone,
@@ -120,7 +119,7 @@ func TestSelectBackend(t *testing.T) {
 				Pasta: "/usr/bin/pasta",
 				PastaOptions: testOptionSet(
 					"--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns",
-					"--no-splice", "--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra", "--pid",
+					"--no-splice", "--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra", "--ipv4-only", "--pid",
 					"--quiet", "--foreground", "--no-udp",
 				),
 			},
@@ -160,7 +159,7 @@ func TestSelectBackend(t *testing.T) {
 				Pasta: "/usr/bin/pasta",
 				PastaOptions: testOptionSet(
 					"--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns", "--no-splice",
-					"--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra", "--quiet", "--foreground",
+					"--no-icmp", "--no-dhcp", "--no-dhcpv6", "--no-ndp", "--no-ra", "--ipv4-only", "--quiet", "--foreground",
 				),
 			},
 			wantErr: "lacks options required to enforce off-mode egress",
@@ -199,7 +198,7 @@ func TestDirectFallbackDNSCompatible(t *testing.T) {
 	}{
 		{address: "", want: true},
 		{address: "192.0.2.53", want: true},
-		{address: "2001:db8::53", want: true},
+		{address: "2001:db8::53", want: false},
 		{address: "127.0.0.1", want: false},
 		{address: "::1", want: false},
 		{address: "0.0.0.0", want: false},

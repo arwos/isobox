@@ -59,7 +59,7 @@ func startSlirp(slirpPath string, namespacePID int, rules []profile.PortRule, st
 		tempDir:    tempDir,
 	}
 	args := []string{
-		"--configure", "--enable-ipv6",
+		"--configure",
 		"--ready-fd=3", "--exit-fd=4",
 	}
 	if len(rules) != 0 {
@@ -153,9 +153,10 @@ func expandSlirpHostForwards(rules []profile.PortRule) ([]slirpHostForward, erro
 	var forwards []slirpHostForward
 	for index, rule := range rules {
 		address := net.ParseIP(rule.HostAddress)
-		if address == nil || address.To4() == nil {
-			return nil, fmt.Errorf("profile.network.port[%d].host_address is not supported by slirp4netns", index)
+		if address == nil || address.To4() == nil || strings.Contains(rule.HostAddress, ":") {
+			return nil, fmt.Errorf("profile.network.port[%d].host_address must be IPv4; IPv6 is disabled", index)
 		}
+		address = address.To4()
 		start, end := rule.Port, rule.Port
 		if rule.EndPort != 0 {
 			end = rule.EndPort
@@ -284,6 +285,10 @@ func slirpAddHostForward(socketPath string, forward slirpHostForward) error {
 }
 
 func slirpHostForwardRequest(forward slirpHostForward) ([]byte, error) {
+	address := net.ParseIP(forward.HostAddr)
+	if address == nil || address.To4() == nil || strings.Contains(forward.HostAddr, ":") {
+		return nil, fmt.Errorf("slirp host-forward address %q must be IPv4; IPv6 is disabled", forward.HostAddr)
+	}
 	request := struct {
 		Execute   string           `json:"execute"`
 		Arguments slirpHostForward `json:"arguments"`

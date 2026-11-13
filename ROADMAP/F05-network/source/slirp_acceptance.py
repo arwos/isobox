@@ -169,6 +169,59 @@ def test_off_egress(binary, environment, root):
         host_listener.close()
 
 
+def test_ipv6_disabled(binary, environment, root, mode, expect_fallback=False):
+    profile = write_profile(root, mode)
+    app = """
+        import pathlib, socket
+        entries = pathlib.Path('/proc/net/if_inet6')
+        if entries.exists():
+            interfaces = {line.split()[5] for line in entries.read_text().splitlines() if len(line.split()) >= 6}
+            unexpected = interfaces - {'lo'}
+            if unexpected:
+                raise SystemExit('IPv6 interfaces are configured in the sandbox: %r' % sorted(unexpected))
+
+        try:
+            tcp = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        except OSError:
+            tcp = None
+        if tcp is not None:
+            tcp.settimeout(1)
+            try:
+                tcp.connect(('2606:4700:4700::1111', 443))
+            except OSError:
+                pass
+            else:
+                raise SystemExit('IPv6 TCP reached an external endpoint')
+            finally:
+                tcp.close()
+
+        try:
+            udp = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        except OSError:
+            udp = None
+        if udp is not None:
+            udp.settimeout(1)
+            try:
+                try:
+                    udp.sendto(b'isobox-ipv6-check', ('2606:4700:4700::1111', 53, 0, 0))
+                    udp.recvfrom(512)
+                except (OSError, socket.timeout):
+                    pass
+                else:
+                    raise SystemExit('IPv6 UDP/DNS received an external response')
+            finally:
+                udp.close()
+        print('IPv6 interface and external traffic disabled')
+    """
+    stdout, stderr = run_isobox(binary, profile, environment, app, timeout=20)
+    if "IPv6 interface and external traffic disabled" not in stdout:
+        raise RuntimeError(f"{mode} IPv6 probe did not report success: {stdout!r}")
+    fallback_used = "trying compatible slirp4netns fallback" in stderr
+    if expect_fallback and not fallback_used:
+        raise RuntimeError(f"pasta failure did not report the validated slirp fallback:\n{stderr}")
+    print(f"PASS {mode} mode has no non-loopback IPv6 interface or external IPv6 traffic")
+
+
 def test_off_ports_fail_closed(binary, environment, root):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reserve:
         reserve.bind(("127.0.0.1", 0))
@@ -377,135 +430,6 @@ def test_direct_forwards(binary, environment, root, expect_fallback=False):
         process.communicate()
 
 
-def reserve_ipv6_loopback_port():
-    for _ in range(64):
-        tcp = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-        udp = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
-        try:
-            tcp.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-            udp.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-            tcp.bind(("::1", 0))
-            port = tcp.getsockname()[1]
-            udp.bind(("::1", port))
-            return port, (tcp, udp)
-        except OSError:
-            tcp.close()
-            udp.close()
-    raise RuntimeError("could not reserve a TCP+UDP IPv6 loopback port")
-
-
-def test_direct_ipv6_loopback_forward(binary, environment, root):
-    port, reservations = reserve_ipv6_loopback_port()
-    for reservation in reservations:
-        reservation.close()
-    profile = write_profile(
-        root,
-        "direct",
-        port_range=(port, port),
-        host_address="::1",
-    )
-    app = """
-        import select, socket, sys
-        port = int(sys.argv[1])
-        tcp = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-        tcp.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-        tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        tcp.bind(("::", port))
-        tcp.listen(1)
-        udp = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
-        udp.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-        udp.bind(("::", port))
-        print("READY", flush=True)
-        seen = set()
-        while seen != {"tcp", "udp"}:
-            ready, _, _ = select.select([tcp, udp], [], [], 20)
-            if not ready:
-                raise SystemExit("timed out waiting for IPv6 TCP and UDP forwards")
-            for item in ready:
-                if item is tcp:
-                    connection, _ = tcp.accept()
-                    connection.sendall(b"tcp:" + connection.recv(64))
-                    connection.close()
-                    seen.add("tcp")
-                else:
-                    payload, address = udp.recvfrom(64)
-                    udp.sendto(b"udp:" + payload, address)
-                    seen.add("udp")
-        print("DONE IPv6 TCP and UDP", flush=True)
-    """
-    command = [
-        str(binary),
-        "run",
-        f"--profile={profile}",
-        "--app-id=f05-acceptance-v6",
-        "--",
-        "/usr/bin/python3",
-        "-c",
-        textwrap.dedent(app),
-        str(port),
-    ]
-    process = subprocess.Popen(
-        command,
-        env=environment,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    try:
-        stdout_parts = []
-        stderr_parts = []
-        marker = ""
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline and process.poll() is None and marker != "READY":
-            ready, _, _ = select.select([process.stdout, process.stderr], [], [], 0.25)
-            if process.stdout in ready:
-                line = process.stdout.readline()
-                if line:
-                    marker = line.strip()
-                    stdout_parts.append(line)
-            if process.stderr in ready:
-                chunk = os.read(process.stderr.fileno(), 8192)
-                if chunk:
-                    stderr_parts.append(chunk.decode("utf-8", errors="replace"))
-        if marker != "READY":
-            raise RuntimeError(
-                "IPv6 forwarding fixture did not become ready\n"
-                f"stdout:\n{''.join(stdout_parts)}\n"
-                f"stderr:\n{''.join(stderr_parts)}"
-            )
-
-        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as client:
-            client.settimeout(5)
-            client.connect(("::1", port, 0, 0))
-            client.sendall(b"probe")
-            if client.recv(64) != b"tcp:probe":
-                raise RuntimeError("IPv6 TCP host forward returned an unexpected response")
-        with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as client:
-            client.settimeout(5)
-            client.sendto(b"probe", ("::1", port, 0, 0))
-            response, _ = client.recvfrom(64)
-            if response != b"udp:probe":
-                raise RuntimeError("IPv6 UDP host forward returned an unexpected response")
-
-        stdout, stderr = process.communicate(timeout=10)
-        if process.returncode != 0 or "DONE IPv6 TCP and UDP" not in stdout:
-            raise RuntimeError(
-                f"IPv6 forwarding acceptance exited {process.returncode}\n"
-                f"stdout:\n{''.join(stdout_parts)}{stdout}\n"
-                f"stderr:\n{''.join(stderr_parts)}{stderr}"
-            )
-        print(f"PASS explicit ::1 host bind, IPv6 TCP and UDP on port {port}")
-    finally:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=3)
-        process.communicate()
-
-
 def test_direct_single_protocol(binary, environment, root, protocol):
     start, reservations = reserve_port_range()
     for reservation in reservations:
@@ -647,65 +571,6 @@ def routed_host_ipv4():
         probe.close()
 
 
-def has_host_ipv6_default_route():
-    try:
-        routes = pathlib.Path("/proc/net/ipv6_route").read_text(encoding="ascii").splitlines()
-    except OSError:
-        return False
-    for line in routes:
-        fields = line.split()
-        if len(fields) < 10 or fields[0] != "0" * 32 or fields[1] != "00":
-            continue
-        if fields[9] == "lo" or int(fields[5], 16) == 0xFFFFFFFF:
-            continue
-        return True
-    return False
-
-
-def has_host_routed_ipv6_interface():
-    try:
-        routes = pathlib.Path("/proc/net/ipv6_route").read_text(encoding="ascii").splitlines()
-    except OSError:
-        return False
-    interfaces = set()
-    for line in routes:
-        fields = line.split()
-        if len(fields) < 10 or fields[9] == "lo" or int(fields[5], 16) == 0xFFFFFFFF:
-            continue
-        interfaces.add(fields[9])
-    return has_host_ipv6_default_route() or len(interfaces) == 1
-
-
-def test_direct_ipv6(binary, environment, root):
-    resolver = "2606:4700:4700::1111"
-    profile = write_profile(root, "direct", dns=resolver)
-    app = """
-        import socket, struct
-        resolver = "2606:4700:4700::1111"
-        query = struct.pack("!HHHHHH", 0x4958, 0x0100, 1, 0, 0, 0)
-        query += b"\\x07example\\x03com\\x00" + struct.pack("!HH", 28, 1)
-        udp = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
-        udp.settimeout(8)
-        udp.sendto(query, (resolver, 53, 0, 0))
-        response, _ = udp.recvfrom(2048)
-        udp.close()
-        if len(response) < 12 or response[:2] != query[:2] or not (response[2] & 0x80) or response[3] & 0x0f or response[6:8] == b"\\x00\\x00":
-            raise SystemExit("invalid or failed IPv6 UDP DNS response")
-        answers = socket.getaddrinfo("example.com", 443, socket.AF_INET6, socket.SOCK_STREAM)
-        if not answers:
-            raise SystemExit("IPv6 DNS returned no addresses")
-        connection = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-        connection.settimeout(10)
-        connection.connect(answers[0][4])
-        connection.close()
-        print("external IPv6 DNS, TCP, and UDP passed")
-    """
-    stdout, _ = run_isobox(binary, profile, environment, app)
-    if "external IPv6 DNS, TCP, and UDP passed" not in stdout:
-        raise RuntimeError(f"IPv6 payload did not report success: {stdout!r}")
-    print(f"PASS profile IPv6 DNS {resolver}, external IPv6 TCP and UDP")
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("isobox", type=pathlib.Path, help="built isobox executable")
@@ -728,7 +593,7 @@ def main():
     parser.add_argument(
         "--dns-only",
         action="store_true",
-        help="run only direct-mode DNS and outbound IPv4/IPv6 connectivity probes",
+        help="run only direct-mode DNS, IPv4 connectivity, and IPv6-disable probes",
     )
     args = parser.parse_args()
     if args.simulate_pasta_failure and args.backend != "auto":
@@ -785,8 +650,6 @@ def main():
             if slirp:
                 (path_dir / "slirp4netns").symlink_to(slirp)
         environment = create_environment(root, path_dir)
-        host_ipv6_route = has_host_ipv6_default_route()
-        host_routed_ipv6_interface = has_host_routed_ipv6_interface()
 
         if args.dns_only:
             test_direct_external(
@@ -804,21 +667,25 @@ def main():
                 backend=args.backend,
                 expect_fallback=args.simulate_pasta_failure,
             )
-            if host_ipv6_route:
-                test_direct_ipv6(binary, environment, root / "ipv6")
-            else:
-                print("SKIP external IPv6: host has no IPv6 default route")
+            test_ipv6_disabled(
+                binary,
+                environment,
+                root / "ipv6-disabled",
+                "direct",
+                expect_fallback=args.simulate_pasta_failure,
+            )
         else:
             if args.backend == "slirp":
                 test_off_egress(binary, environment, root / "off")
+                test_ipv6_disabled(binary, environment, root / "off-ipv6", "off")
                 test_off_ports_fail_closed(binary, environment, root / "off-ports")
-            if args.backend in ("pasta", "auto") and pasta and not args.simulate_pasta_failure:
-                if host_routed_ipv6_interface:
-                    test_direct_ipv6_loopback_forward(binary, environment, root / "ipv6-forward")
-                else:
-                    print("SKIP IPv6 host bind: pasta has no selected host IPv6 interface")
-            elif args.backend == "slirp":
-                print("SKIP IPv6 host bind: slirp4netns host-forward API is IPv4-only")
+            test_ipv6_disabled(
+                binary,
+                environment,
+                root / "direct-ipv6",
+                "direct",
+                expect_fallback=args.simulate_pasta_failure,
+            )
             test_direct_forwards(
                 binary,
                 environment,
@@ -843,10 +710,6 @@ def main():
                     backend=args.backend,
                     expect_fallback=args.simulate_pasta_failure,
                 )
-                if host_ipv6_route:
-                    test_direct_ipv6(binary, environment, root / "ipv6")
-                else:
-                    print("SKIP external IPv6: host has no IPv6 default route")
         print(f"{args.backend} direct acceptance completed")
 
 

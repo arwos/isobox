@@ -53,6 +53,7 @@ var pastaOptionProbes = []optionProbe{
 	{option: "--no-ra", args: []string{"--no-ra"}},
 	{option: "--no-tcp", args: []string{"--no-tcp"}},
 	{option: "--no-udp", args: []string{"--no-udp"}},
+	{option: "--ipv4-only", args: []string{"--ipv4-only"}},
 	{option: "--pid", args: []string{"--pid=/dev/null"}},
 	{option: "--dns-forward", args: []string{"--dns-forward=10.0.2.3"}},
 	{option: "--dns-host", args: []string{"--dns-host=127.0.0.1"}},

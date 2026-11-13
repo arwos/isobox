@@ -1,6 +1,6 @@
 # Архитектура и продуктовый план isobox
 
-Статус: roadmap согласован пользователем 2026-11-12. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация, host preflight, bwrap runtime, профильные mounts, изолированный HOME и ручные GUI grants. F05 содержит режим `off` с fail-closed egress guard и опубликованными портами через pasta, а также `direct` на pasta/slirp с DNS, forwarding и runtime fallback до запуска приложения. Live acceptance для `off` с TCP/UDP портами прошла; direct IPv4 acceptance прошла на pasta и slirp. Внешняя IPv6-приёмка для direct остаётся открыта. F07 содержит cgroup/rlimit backend с fail-closed startup gate; F07-T01 прошла live-приёмку на пользовательском systemd scope. F08 содержит пользовательские desktop launchers и layered XDG settings; live-приёмка F08-T01 прошла в пользовательской X11-сессии. Proxy runtime остаётся не реализованным.
+Статус: roadmap согласован пользователем 2026-11-12; 2026-11-13 пользователь решил полностью отключить IPv6. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация, host preflight, bwrap runtime, профильные mounts, изолированный HOME и ручные GUI grants. F05 содержит режим `off` с fail-closed egress guard и опубликованными IPv4 портами через pasta, а также `direct` на IPv4-only pasta/slirp с DNS, forwarding и runtime fallback до запуска приложения. F07 содержит cgroup/rlimit backend с fail-closed startup gate; F07-T01 прошла live-приёмку на пользовательском systemd scope. F08 содержит пользовательские desktop launchers и layered XDG settings; live-приёмка F08-T01 прошла в пользовательской X11-сессии. Proxy runtime остаётся не реализованным.
 
 ## Назначение и границы
 
@@ -19,6 +19,7 @@ isobox run --profile=/path/to/profile.unic [--app-id=ID] -- app [args...]
 - Профиль формата UNIC не задаёт команду приложения.
 - Типизированная схема профиля описывает mounts, сеть, GUI-разрешения и лимиты. Неизвестные или некорректные настройки не должны незаметно ослаблять изоляцию.
 - Значения по умолчанию пользователь может переопределить в профиле. Режим сети по умолчанию — `off`; профиль может переопределить общий DNS-сервер.
+- Сеть isobox полностью IPv4-only: профильные DNS и host bind адреса принимают только IPv4; pasta запускается с `--ipv4-only`, slirp4netns — без `--enable-ipv6`; будущий proxy TUN отбрасывает IPv6 packets.
 - Для proxy mode профиль ссылается на алиас SOCKS5. Секреты хранятся в отдельном пользовательском файле с правами `0600`, без шифрования на диске; пароль и адрес прокси доступны только сетевому компоненту.
 - Для обычного SOCKS5 показывать предупреждение о незашифрованной аутентификации и передаче данных. Пользователь разрешил такой режим.
 
@@ -33,9 +34,9 @@ isobox run --profile=/path/to/profile.unic [--app-id=ID] -- app [args...]
 Режимы сети: `off`, `direct`, `proxy`.
 
 - `off`: приложение не может инициировать запросы наружу, в LAN или на хост. Хост может подключаться к объявленным в профиле портам приложения; допустимы только ответы по этим соединениям.
-- `direct`: rootless-сеть через `pasta`; при его отсутствии или startup failure до открытия приложения допускается `slirp4netns`, только если preflight подтверждает те же host-forward и DNS требования профиля. Если совместимость не подтверждена или fallback тоже не готов, запуск блокируется.
-- `proxy`: собственный сетевой модуль isobox с SOCKS5 и прозрачным TUN-туннелем. TCP передаётся через SOCKS5 `CONNECT`, UDP — через `UDP ASSOCIATE`; DNS и QUIC идут этим путём. Прямого fallback нет. ICMP и raw-сокеты блокируются. Если прокси или обязательные возможности недоступны, сеть не включается и приложение не запускается.
-- Для публикации входящего порта обязателен адрес привязки на хосте. Правило может задавать TCP, UDP или оба протокола, один порт или диапазон. Автоматическая публикация не объявленных портов запрещена.
+- `direct`: rootless IPv4 сеть через `pasta --ipv4-only`; при его отсутствии или startup failure до открытия приложения допускается `slirp4netns` без `--enable-ipv6`, только если preflight подтверждает те же host-forward и DNS требования профиля. Если совместимость не подтверждена или fallback тоже не готов, запуск блокируется.
+- `proxy`: собственный IPv4-only сетевой модуль isobox с SOCKS5 и прозрачным TUN-туннелем. TCP передаётся через SOCKS5 `CONNECT`, UDP — через `UDP ASSOCIATE`; DNS и QUIC идут этим путём. IPv6 packets, ICMP и raw-сокеты блокируются. Прямого fallback нет. Если прокси или обязательные возможности недоступны, сеть не включается и приложение не запускается.
+- Для публикации входящего порта обязателен IPv4 адрес привязки на хосте. Правило может задавать TCP, UDP или оба протокола, один порт или диапазон. Автоматическая публикация не объявленных портов запрещена.
 - Для `off` вместе с входящими портами реализация обязана доказать отсутствие исходящего обхода; если выбранный механизм не может это гарантировать, запуск блокируется.
 
 ### Лимиты и интеграция
@@ -58,7 +59,7 @@ internal/limits/        применение лимитов
 internal/integration/   необязательные desktop/system defaults
 ```
 
-`cmd/isobox/`, `internal/cli/`, `internal/profile/`, `internal/preflight/`, `internal/sandbox/`, `internal/limits/` и `internal/integration/` содержат CLI, схемы документов, host capability checks, bwrap root, профильные limits и optional XDG integration. Для `off` с объявленными портами helper создаёт network namespace после bwrap mounts, ставит nftables default-drop guard и ждёт, пока supervisor подключит pasta и проверит его readiness. Для `direct` runtime выбирает pasta, допускает slirp при сохранении возможностей профиля, фиксирует DNS в read-only resolver file и открывает только объявленные host forwards. В F05 остаётся внешняя IPv6-приёмка direct; F07 и F08 пройдены. Proxy/SOCKS5/TUN остаётся отдельной roadmap задачей.
+`cmd/isobox/`, `internal/cli/`, `internal/profile/`, `internal/preflight/`, `internal/sandbox/`, `internal/limits/` и `internal/integration/` содержат CLI, схемы документов, host capability checks, bwrap root, профильные limits и optional XDG integration. Для `off` с объявленными портами helper создаёт network namespace после bwrap mounts, ставит nftables default-drop guard и ждёт, пока supervisor подключит pasta в IPv4-only режиме и проверит его readiness. Для `direct` runtime выбирает pasta с `--ipv4-only`, допускает slirp без `--enable-ipv6` при сохранении возможностей профиля, фиксирует только IPv4 DNS в read-only resolver file и открывает только объявленные IPv4 host forwards. Proxy/SOCKS5/TUN остаётся отдельной roadmap задачей и будет IPv4-only.
 
 ## Зависимости и проверенные источники
 

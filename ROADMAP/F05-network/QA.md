@@ -1,18 +1,33 @@
 # F05 QA
 
+## Текущий IPv4-only критерий
+
+2026-11-13 пользователь решил полностью отключить IPv6. Предыдущие IPv6-приёмочные проверки, ожидавшие внешнюю IPv6-сеть или `::1` forwarding, заменены. Текущая приёмка требует IPv4-only backend configuration, отсутствия IPv6-интерфейсов кроме loopback и отказа внешним IPv6 TCP/UDP в `off` и `direct` на каждом backend.
+
 ## Планируемые сценарии
 
-- `off`: исходящие TCP/UDP, DNS, IPv4/IPv6 и доступ к host/LAN не проходят; объявленный host port принимает соединение; ответы разрешены только в его рамках.
+- `off`: исходящие IPv4 TCP/UDP, DNS и доступ к host/LAN не проходят; IPv6 выключен; объявленный IPv4 host port принимает соединение; ответы разрешены только в его рамках.
 - `off`: попытки использовать не объявленный host port или соседнее устройство завершаются отказом.
 - `direct`: внешний TCP/UDP работает; проверки доступны только объявленные host bind address и диапазоны.
 - Убедиться, что pasta auto forwarding отключён; приложение не получает не объявленные входящие порты.
 - Сравнить семантику direct mode на pasta/slirp; отказать в fallback при отличии IP/protocol/bind behavior.
 - Проверить занятую host-пару адрес/порт, диапазон с конфликтом и низкий порт без возможности bind: точная ошибка, приложение не стартует.
 - Проверить отсутствие утечки при отключении backend во время запуска.
-- `direct`: внешние IPv4/IPv6 TCP/UDP и profile DNS работают на pasta и slirp; DNS host-loopback и profile override работают без чтения host `/etc/resolv.conf` приложением.
+- `direct`: внешние IPv4 TCP/UDP и profile DNS работают на pasta и slirp; IPv6 выключен; DNS host-loopback и profile override работают без чтения host `/etc/resolv.conf` приложением.
+- Валидация профиля и Settings отклоняет IPv6 DNS и host bind; host IPv6 nameservers не попадают в sandbox resolver.
 - `direct`: TCP-only, UDP-only, both, одиночный порт и диапазон проходят через выбранный backend; host bind address совпадает с профилем; конфликт bind/API отменяет запуск до приложения.
 
 ## Выполнение
+
+- 2026-11-13: пользователь решил полностью отключить IPv6. Профильные DNS и host bind проверяются как IPv4; pasta запускается с `--ipv4-only`, slirp4netns без `--enable-ipv6`, host resolver фильтруется до IPv4. Unit-тесты проверяют передаваемые backend флаги и отказ от IPv6 DNS/bind адресов.
+- `gofmt -w internal/preflight/backend.go internal/preflight/backend_test.go internal/preflight/preflight.go internal/profile/decode.go internal/profile/decode_test.go internal/sandbox/build.go internal/sandbox/forward_linux.go internal/sandbox/forward_linux_test.go internal/sandbox/network.go internal/sandbox/network_test.go internal/sandbox/slirp_linux.go` — прошло.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./...` — прошло; после добавления запуска helper-флагов `go test ./internal/sandbox` также прошло.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go vet ./...` — прошло.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build -o /tmp/isobox-ipv4 ./cmd/isobox` — прошло; GVM сообщил, что не может записать stat cache в `/home/user/.gvm/.cache`.
+- `git diff --check` и Python AST-разбор `slirp_acceptance.py`, `pasta_off_acceptance.py` — прошли.
+- `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-ipv4 --backend pasta --local-only` — runtime acceptance заблокирована host preflight: bwrap не может создать NETLINK_ROUTE socket (`Operation not permitted`), поэтому приложение не запускалось.
+- `python3 ROADMAP/F05-network/source/slirp_acceptance.py /tmp/isobox-ipv4 --backend slirp --local-only` — runtime acceptance заблокирована до запуска приложения: host не разрешил создать AF_INET socket (`EPERM`).
+- Live IPv4/IPv6 isolation и forwarding остаются непроверенными после IPv4-only изменения. Для закрытия F05-T02 повторить acceptance на rootless Linux-хосте, где bwrap может настроить loopback/netlink и тестовый процесс может создавать обычные сокеты.
 
 - `gofmt -w internal/cli/cli.go internal/preflight/backend.go internal/preflight/preflight.go internal/sandbox/build.go internal/sandbox/forward_linux.go internal/sandbox/network.go internal/sandbox/run_linux.go internal/sandbox/run_other.go internal/sandbox/slirp_linux.go` — прошло.
 - `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — прошло; GVM вывел предупреждение о недоступном stat cache в `/home/user/.gvm/.cache`, на сборку это не повлияло.

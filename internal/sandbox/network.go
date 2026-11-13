@@ -145,6 +145,12 @@ func resolverNameservers(config []byte) []string {
 }
 
 func directResolver(selection preflight.BackendSelection, backend preflight.BackendKind) (string, []string, error) {
+	if selection.DNSAddress != "" {
+		address := net.ParseIP(selection.DNSAddress)
+		if address == nil || address.To4() == nil || strings.Contains(selection.DNSAddress, ":") {
+			return "", nil, fmt.Errorf("configured DNS address %q is not IPv4; IPv6 is disabled", selection.DNSAddress)
+		}
+	}
 	if backend == preflight.BackendSlirp4netns {
 		address := selection.DNSAddress
 		if selection.UseHostDNS || address == "" {
@@ -162,26 +168,16 @@ func directResolver(selection preflight.BackendSelection, backend preflight.Back
 		if err != nil {
 			return "", nil, fmt.Errorf("read host DNS configuration: %w", err)
 		}
-		for _, line := range strings.Split(string(contents), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) < 2 || fields[0] != "nameserver" {
-				continue
-			}
-			address := net.ParseIP(fields[1])
-			if address == nil {
-				continue
-			}
-			nameservers = appendUniqueIP(nameservers, address)
-		}
+		nameservers = hostIPv4Nameservers(string(contents))
 	} else {
 		address := net.ParseIP(selection.DNSAddress)
-		if address == nil {
-			return "", nil, fmt.Errorf("configured DNS address %q is not an IP address", selection.DNSAddress)
+		if address == nil || address.To4() == nil || strings.Contains(selection.DNSAddress, ":") {
+			return "", nil, fmt.Errorf("configured DNS address %q is not IPv4; IPv6 is disabled", selection.DNSAddress)
 		}
-		nameservers = append(nameservers, address)
+		nameservers = append(nameservers, address.To4())
 	}
 	if len(nameservers) == 0 {
-		return "", nil, fmt.Errorf("host DNS configuration contains no usable nameserver")
+		return "", nil, fmt.Errorf("host DNS configuration contains no usable IPv4 nameserver; IPv6 is disabled")
 	}
 
 	var lines []string
@@ -190,30 +186,36 @@ func directResolver(selection preflight.BackendSelection, backend preflight.Back
 	for _, address := range nameservers {
 		resolverAddress := address.String()
 		if address.IsLoopback() {
-			family := "v6"
-			if address.To4() != nil {
-				family = "v4"
-			}
+			family := "v4"
 			if !forwardedLoopback[family] {
-				forwardAddress := "fd00::1"
-				if family == "v4" {
-					forwardAddress = "169.254.1.1"
-				}
+				forwardAddress := "169.254.1.1"
 				pastaArgs = append(pastaArgs,
 					"--dns-forward", forwardAddress,
 					"--dns-host", resolverAddress,
 				)
 				forwardedLoopback[family] = true
 			}
-			if family == "v4" {
-				resolverAddress = "169.254.1.1"
-			} else {
-				resolverAddress = "fd00::1"
-			}
+			resolverAddress = "169.254.1.1"
 		}
 		lines = append(lines, "nameserver "+resolverAddress)
 	}
 	return strings.Join(lines, "\n") + "\n", pastaArgs, nil
+}
+
+func hostIPv4Nameservers(contents string) []net.IP {
+	var addresses []net.IP
+	for _, line := range strings.Split(contents, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "nameserver" {
+			continue
+		}
+		address := net.ParseIP(fields[1])
+		if address == nil || address.To4() == nil || strings.Contains(fields[1], ":") {
+			continue
+		}
+		addresses = appendUniqueIP(addresses, address.To4())
+	}
+	return addresses
 }
 
 func appendUniqueIP(addresses []net.IP, candidate net.IP) []net.IP {

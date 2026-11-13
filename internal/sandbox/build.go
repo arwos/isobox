@@ -246,9 +246,10 @@ func portForwardSpecs(rules []profile.PortRule) (string, string, error) {
 	var tcp, udp []string
 	for index, rule := range rules {
 		ip := net.ParseIP(rule.HostAddress)
-		if ip == nil {
-			return "", "", fmt.Errorf("profile.network.port[%d].host_address is not an IP address", index)
+		if ip == nil || ip.To4() == nil || strings.Contains(rule.HostAddress, ":") {
+			return "", "", fmt.Errorf("profile.network.port[%d].host_address must be IPv4; IPv6 is disabled", index)
 		}
+		ip = ip.To4()
 		portRange := strconv.Itoa(int(rule.Port))
 		if rule.EndPort != 0 {
 			portRange += "-" + strconv.Itoa(int(rule.EndPort))

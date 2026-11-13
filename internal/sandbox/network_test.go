@@ -77,3 +77,23 @@ func TestCombineResolverConfigsReusesSharedDNS(t *testing.T) {
 		t.Fatalf("combineResolverConfigs() = %q, want unchanged shared DNS", got)
 	}
 }
+
+func TestHostIPv4NameserversIgnoresIPv6(t *testing.T) {
+	got := hostIPv4Nameservers("# resolver config\nnameserver 2001:db8::53\nnameserver 192.0.2.53\nnameserver 192.0.2.53\n")
+	if len(got) != 1 || got[0].String() != "192.0.2.53" {
+		t.Fatalf("hostIPv4Nameservers() = %v, want only deduplicated IPv4 nameserver", got)
+	}
+}
+
+func TestDirectResolverRejectsIPv6Override(t *testing.T) {
+	selection := preflight.BackendSelection{
+		Mode:       profile.NetworkModeDirect,
+		DNSAddress: "2001:db8::53",
+		UseHostDNS: false,
+	}
+	for _, backend := range []preflight.BackendKind{preflight.BackendPasta, preflight.BackendSlirp4netns} {
+		if _, _, err := directResolver(selection, backend); err == nil || !strings.Contains(err.Error(), "IPv6 is disabled") {
+			t.Errorf("directResolver(%q) error = %v, want IPv6-disabled error", backend, err)
+		}
+	}
+}

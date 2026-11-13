@@ -59,7 +59,7 @@ def write_profile(root, home, port):
 def host_gateway_probe_app():
     return textwrap.dedent(
         r"""
-        import select, socket, struct, sys
+        import pathlib, select, socket, struct, sys
         published, unannounced, host_probe_port = map(int, sys.argv[1:4])
 
         gateway = None
@@ -101,6 +101,47 @@ def host_gateway_probe_app():
                 raise SystemExit('off mode received an external UDP/DNS response')
         finally:
             udp_probe.close()
+
+        ipv6_interfaces = set()
+        ipv6_table = pathlib.Path('/proc/net/if_inet6')
+        if ipv6_table.exists():
+            with ipv6_table.open(encoding='ascii') as addresses:
+                for line in addresses:
+                    fields = line.split()
+                    if len(fields) >= 6:
+                        ipv6_interfaces.add(fields[5])
+        if ipv6_interfaces - {'lo'}:
+            raise SystemExit('off mode configured non-loopback IPv6 interfaces: %r' % sorted(ipv6_interfaces - {'lo'}))
+        try:
+            ipv6_probe = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        except OSError:
+            ipv6_probe = None
+        if ipv6_probe is not None:
+            ipv6_probe.settimeout(1)
+            try:
+                ipv6_probe.connect(('2606:4700:4700::1111', 443))
+            except OSError:
+                pass
+            else:
+                raise SystemExit('off mode allowed an external IPv6 TCP connection')
+            finally:
+                ipv6_probe.close()
+        try:
+            ipv6_udp = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        except OSError:
+            ipv6_udp = None
+        if ipv6_udp is not None:
+            ipv6_udp.settimeout(1)
+            try:
+                try:
+                    ipv6_udp.sendto(b'isobox-off-ipv6', ('2606:4700:4700::1111', 53, 0, 0))
+                    ipv6_udp.recvfrom(512)
+                except OSError:
+                    pass
+                else:
+                    raise SystemExit('off mode received an external IPv6 UDP response')
+            finally:
+                ipv6_udp.close()
 
         try:
             icmp_probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_ICMP)

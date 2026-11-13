@@ -74,6 +74,7 @@ func startPasta(pastaPath string, namespacePID int, rules []profile.PortRule, mo
 	}
 	args := []string{
 		"--foreground", "--quiet",
+		"--ipv4-only",
 		"--pid", process.pidFile,
 		"--config-net",
 		"--tcp-ns=none", "--udp-ns=none",
@@ -327,9 +328,10 @@ func expectedForwardedSockets(rules []profile.PortRule) (map[string]struct{}, bo
 	var hasTCP, hasUDP bool
 	for index, rule := range rules {
 		ip := net.ParseIP(rule.HostAddress)
-		if ip == nil {
-			return nil, false, false, fmt.Errorf("profile.network.port[%d].host_address is not an IP address", index)
+		if ip == nil || ip.To4() == nil || strings.Contains(rule.HostAddress, ":") {
+			return nil, false, false, fmt.Errorf("profile.network.port[%d].host_address must be IPv4; IPv6 is disabled", index)
 		}
+		ip = ip.To4()
 		start, end := rule.Port, rule.Port
 		if rule.EndPort != 0 {
 			end = rule.EndPort
