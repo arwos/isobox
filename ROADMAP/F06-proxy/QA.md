@@ -25,3 +25,16 @@
 - `git diff --check` — без замечаний.
 
 Не проверялось: чтение файла под отдельным UID вручную и полная интерактивная установка credentials в пользовательской TTY. Тесты проверяют owner/mode, отказ другим правам и фактическое отключение/восстановление ECHO через pseudo-terminal. SOCKS handshake, сетевой runtime и sing-box fixture относятся к F06-T02/T03/T04.
+
+### F06-T02 — SOCKS5 TCP и UDP client
+
+- `gofmt -w internal/proxy/client_test.go` — успешно.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./internal/proxy -count=1` — прошло.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test ./... -count=1` — прошло.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test -race ./internal/proxy -count=1` — прошло.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go vet ./...` — прошло.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — exit 0; GVM напечатал предупреждение о недоступном stat cache в `/home/user/.gvm/.cache` на read-only filesystem.
+- `bash -n tests/f06-proxy/client/run.sh` и `git diff --check` — без замечаний.
+- `./tests/f06-proxy/client/run.sh` — прошло; отчёт создан в `/tmp/isobox-test-results/f06-proxy-client.QZnh34/result.txt`. Runner записывает metadata и raw output и может быть запущен пользователем повторно.
+
+Проверены no-auth и username/password negotiation, отказ auth без утечки credentials, malformed method/reply, TCP CONNECT с IPv4/domain, запрет downgrade, IPv6/invalid destinations, SOCKS refusal и недоступность без direct retry, отмена handshake, UDP ASSOCIATE/auth, relay-only UDP send, игнорирование datagrams от другого источника, FRAG/IPv6 rejection и завершение association вместе с control connection/context. Использовались `net.Pipe` и UDP mock; реальные сетевые сокеты, sing-box/Podman, TUN packet conversion, внешний DNS/Internet capture и IPv6/ICMP/raw rejection на TUN уровне здесь не проверялись и остаются в T03/T04.

@@ -28,6 +28,16 @@ type Info struct {
 	Auth   AuthMode
 }
 
+// runtimeConfig is intentionally not exported. Only code in this package can
+// receive credentials loaded from the private store.
+type runtimeConfig struct {
+	alias    string
+	server   string
+	auth     AuthMode
+	username string
+	password string
+}
+
 // Validate checks the non-secret parts of a proxy definition.
 func Validate(alias, server string, auth AuthMode) error {
 	if !profile.IsValidProxyAlias(alias) {

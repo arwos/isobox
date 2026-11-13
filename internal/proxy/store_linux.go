@@ -34,16 +34,6 @@ type storedProxy struct {
 	Password string   `unic:"password,omitempty"`
 }
 
-// runtimeConfig is deliberately unexported. Management commands can inspect
-// only Info; future SOCKS5 runtime code in this package uses loadRuntimeConfig.
-type runtimeConfig struct {
-	alias    string
-	server   string
-	auth     AuthMode
-	username string
-	password string
-}
-
 // Add stores a proxy definition. Credentials are accepted as input only so
 // the CLI can pass values read interactively; they are never returned by the
 // management API.
