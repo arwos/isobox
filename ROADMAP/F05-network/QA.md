@@ -121,3 +121,11 @@ Acceptance harness теперь проверяет объявленный `::1` 
 - Одноразовый wrapper, добавляющий `--ipv6-only` только к runtime вызову pasta, и IPv6-only payload с объявленным `::1` TCP+UDP портом завершились до `READY`: `Couldn't switch to pasta namespaces: Operation not permitted`. Это не forwarding acceptance pass; приложение не запускалось.
 - Отдельный `pasta --ipv6-only --config-net ... /usr/bin/sleep 1` завершился с кодом 0, но без клиентского TCP/UDP probe не считается проверкой host forwarding.
 - В этой среде нет безопасного локального способа создать маршрутизируемый IPv6 test interface. Требуется внешний host environment с настроенным IPv6 маршрутом и разрешёнными rootless namespace/netlink операциями.
+
+## Повторная проверка IPv6 `::1` host forwarding
+
+- Повторное чтение таблицы маршрутов подтвердило: глобального IPv6 адреса и default route нет; доступны только `fe80::/64` на `tun0` и `wlp3s0`.
+- Точечный вызов IPv6 loopback acceptance harness с временным wrapper вокруг pasta и `--outbound-if6=lo` остановился до `READY`: `External interface not usable`.
+- Вариант с `--interface=lo` остановился до `READY`: pasta не смогла открыть объявленный host listener `::1` (`Failed to bind port ... for option '-t ::1/...'`).
+- Варианты `--interface=tun0|wlp3s0 --ipv6-only` остановились до `READY` с `Couldn't switch to pasta namespaces: Operation not permitted`; `--outbound-if6=tun0|wlp3s0 --ipv6-only` — с `External interface not usable`.
+- Wrapper и тестовые каталоги были временными; host routes и интерфейсы не менялись. Ни одна из этих попыток не является IPv6 forwarding acceptance pass. Нужна среда, где pasta может настроить IPv6 namespace и host `::1` listener; external IPv6 проверки также требуют рабочего default route.
