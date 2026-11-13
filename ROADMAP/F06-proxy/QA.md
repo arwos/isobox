@@ -86,6 +86,10 @@
 
 Для этой итерации выполнены `gofmt -w internal/sandbox/tun_helper_linux.go internal/sandbox/proxy_ingress_linux.go`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go vet ./...` и `git diff --check` — все завершились успешно; сборка вывела предупреждение GVM о read-only stat cache. Go tests и runtime runner не запускались.
 
+Пользовательский отчёт `/tmp/isobox-test-results/f06-proxy-runtime.5Pmywj/result.txt` на `b7ed212` дошёл до `configureProxyIngressRouting`: pasta прошёл startup readiness, но helper отверг адрес `isoboxp0` как неверный. Причина — `net.ParseCIDR("10.89.1.2/24")` возвращает host IP отдельно от network IP `10.89.1.0/24`; код ошибочно сравнивал адрес интерфейса со строкой сети. Проверка теперь отдельно сравнивает IPv4 host address `10.89.1.2` и маску `/24`. Helper заблокировал приложение до завершения route setup; TUN FD gate release и proxy TCP/UDP/DNS/ingress трафик этим отчётом не подтверждены.
+
+После исправления выполнены `gofmt -w internal/sandbox/proxy_ingress_linux.go`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go vet ./...` и `git diff --check` — все завершились успешно; сборка вывела предупреждение GVM о read-only stat cache. Go tests и runtime runner не запускались.
+
 ### F06-T04 — sing-box Podman fixture (приёмка пройдена)
 
 - `gofmt -w internal/proxy/podman_fixture_test.go` — успешно.

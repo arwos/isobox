@@ -174,12 +174,17 @@ func verifyProxyIngressAddress(link netlink.Link) error {
 	if err != nil {
 		return fmt.Errorf("inspect pasta ingress IPv4 address: %w", err)
 	}
-	_, expected, err := net.ParseCIDR(proxyIngressAddress)
+	expectedIP, expectedNetwork, err := net.ParseCIDR(proxyIngressAddress)
 	if err != nil {
 		return fmt.Errorf("parse fixed pasta ingress address: %w", err)
 	}
+	expectedIP = expectedIP.To4()
 	for _, address := range addresses {
-		if address.IPNet != nil && address.IPNet.String() == expected.String() {
+		if address.IPNet == nil {
+			continue
+		}
+		configuredIP := address.IPNet.IP.To4()
+		if configuredIP != nil && configuredIP.Equal(expectedIP) && bytes.Equal(address.IPNet.Mask, expectedNetwork.Mask) {
 			return nil
 		}
 	}
