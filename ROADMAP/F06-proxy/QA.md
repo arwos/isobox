@@ -64,14 +64,14 @@
 
 Guarded ingress пока не имеет runtime acceptance: отсутствующий `/dev/net/tun` не позволяет запустить TUN/helper path в этой среде, а nftables policy route и pasta tap нужно проверить совместно на обычном Linux host. До этой проверки F06-T03 остаётся `[~]`. На целевом host запустите `./tests/f06-proxy/runtime/run.sh` и пришлите `result.txt`.
 
-### F06-T04 — sing-box Podman fixture (частично)
+### F06-T04 — sing-box Podman fixture (приёмка пройдена)
 
 - `gofmt -w internal/proxy/podman_fixture_test.go` — успешно.
 - `go test ./internal/proxy -count=1` и `go test ./... -count=1` — прошли; fixture integration checks пропускаются без `ISOBOX_SINGBOX_FIXTURE`.
 - `go vet ./...` — прошло.
 - `go build ./...` — exit 0; GVM напечатал предупреждение о записи stat cache в read-only `/home/user/.gvm/.cache`.
 - `bash -n tests/f06-proxy/sing-box/run.sh`, `python3 -m json.tool tests/f06-proxy/sing-box/config.json` и `git diff --check` — без замечаний.
-- `tests/f06-proxy/sing-box/run.sh` — не дошёл до запуска контейнера: `podman info` сообщил `Failed to obtain podman configuration: set sticky bit on: chmod /run/user/1000/libpod: read-only file system`. Отчёт: `/tmp/isobox-test-results/f06-sing-box.IyoGyk/result.txt`.
-- Повторная проверка окружения: `/dev/net/tun` отсутствует. `podman info` с отдельными `XDG_RUNTIME_DIR`, `--root` и `--runroot` в `/tmp` обходит read-only runtime directory, но rootless namespace setup завершается `newuidmap ... write to uid_map failed: Operation not permitted`. Fixture и proxy TUN runtime в этом окружении по-прежнему не могут быть приняты.
+- Первый запуск `tests/f06-proxy/sing-box/run.sh` в Codex-среде не дошёл до контейнера: `podman info` сообщил `Failed to obtain podman configuration: set sticky bit on: chmod /run/user/1000/libpod: read-only file system`. Повторная проверка с `XDG_RUNTIME_DIR`, `--root` и `--runroot` в `/tmp` затем уткнулась в sandbox `newuidmap ... write to uid_map failed: Operation not permitted`.
+- Пользовательская runtime-приёмка прошла: `fixture_acceptance=passed`; Go integration checks подтвердили TCP CONNECT, UDP ASSOCIATE, отказ неправильной auth-пары и остановку сервера. Отчёт: `/tmp/isobox-test-results/f06-sing-box.SNry0x/result.txt`.
 
-Runner проверяет TCP CONNECT, UDP ASSOCIATE, неверный пароль и недоступность listener после `podman stop`; тестовые назначения — loopback echo endpoints, внешний Интернет не нужен. Runtime acceptance самого контейнера не проверена из-за недоступного rootless Podman. Запустить на Linux-хосте: `./tests/f06-proxy/sing-box/run.sh`, затем предоставить путь к напечатанному `result.txt`.
+Runner проверяет TCP CONNECT, UDP ASSOCIATE, неверный пароль и недоступность listener после `podman stop`; тестовые назначения — loopback echo endpoints, внешний Интернет не нужен. Runtime acceptance пройдена на Linux Mint 7 / kernel 6.12.116 / Podman 5.4.2.
