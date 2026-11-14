@@ -1,3 +1,8 @@
+/*
+ *  Copyright (c) 2026 Mikhail Knyazhev <markus621@yandex.com>. All rights reserved.
+ *  Use of this source code is governed by a MIT license that can be found in the LICENSE file.
+ */
+
 // Package integration provides optional XDG desktop integration and settings
 // defaults without adding a service or privilege requirement to `isobox run`.
 package integration
