@@ -144,7 +144,8 @@ run_probe() {
     local mode=$2
     local gui_fields=$3
     shift 3
-    local marker="$name.started"
+    # probe.py replaces punctuation in marker names with underscores.
+    local marker="${name}_started"
     local log="$result_dir/$name.log"
     local -a environment=("ISOBOX_GUI_TEST_SECRET=must-not-leak" "$@")
     write_profile "$gui_fields"
@@ -233,7 +234,7 @@ printf 'PASS synthetic GUI socket cleanup\n' | tee -a "$events" "$report"
 gpu_profile_fields='  gpu true;'
 write_profile "$gpu_profile_fields"
 gpu_log="$result_dir/gpu-only.log"
-gpu_marker=gpu-only.started
+gpu_marker=gpu-only_started
 active_log=$gpu_log
 if cat -- "$script_dir/probe.py" | env "ISOBOX_GUI_TEST_SECRET=must-not-leak" ISOBOX_GUI_TEST_MODE=gpu \
     "${all_host_surfaces[@]}" timeout 40s "$binary_path" run "--profile=$profile_path" -- \

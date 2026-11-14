@@ -36,24 +36,23 @@
 - F04-T02: `git diff --check` — без замечаний.
 - F04-T02: runner сделан executable для документированного прямого запуска; `bash -n tests/f04-sandbox/run.sh tests/run.sh`, `test -x tests/f04-sandbox/run.sh` и `git diff --check` — успешно.
 - F04-T02: добавлена очистка трёх generated managed-HOME leaf paths после приёмки; `bash -n tests/f04-sandbox/run.sh`, `python3 -c 'import ast; ast.parse(open("tests/f04-sandbox/probe.py", encoding="utf-8").read())'` и `git diff --check` — успешно.
-- F04-T02: runtime runner не запускался в этой среде; приёмка bwrap mounts/HOME ожидает отчёт с целевого пользовательского хоста.
+- F04-T02: пользовательский отчёт `/tmp/isobox-test-results/f04-mount-home.5ylFUo/result.txt` на `6a781b2` завершился `runtime_acceptance=passed` на Linux Mint 7 / kernel 6.12.116 / bubblewrap 0.12.0. Проверены explicit HOME, read-only/writable mounts, persistence, разделение managed HOME по profile/app-id, owner/mode `0700`, fail-closed для отсутствующего source и удаление тестовых HOME leaf-каталогов.
 
 - F04-T01: подготовлен runtime acceptance runner `./tests/run.sh f04-base-runtime`; он проверяет root/runtime paths, очищенное environment, read-only system mounts, argv/exit status, SIGTERM forwarding и fail-closed на симулированной ошибке обязательного `/usr` bind.
 - F04-T01: `bash -n tests/f04-sandbox/base-runtime/run.sh tests/run.sh` — успешно.
 - F04-T01: `python3 -c 'import ast; ast.parse(open("tests/f04-sandbox/base-runtime/probe.py", encoding="utf-8").read())'` — успешно.
 - F04-T01: `git diff --check` — без замечаний.
-- F04-T01: runtime runner не запускался в этой среде; live-приёмка базового bwrap root и lifecycle ожидает отчёт с целевого пользовательского хоста.
+- F04-T01: пользовательский отчёт `/tmp/isobox-test-results/f04-base-runtime.pNmyWf/result.txt` на `6a781b2` завершился `runtime_acceptance=passed` на Linux Mint 7 / kernel 6.12.116 / bubblewrap 0.12.0. Проверены root/runtime paths, clean environment, read-only system mounts, argv, exit status 37, SIGTERM delivery и отказ до payload при ошибке обязательного `/usr` bind.
 
 - F04-T03: подготовлен runtime acceptance runner `./tests/run.sh f04-gui-grants`; он проверяет default-deny, независимые Wayland/X11/PipeWire/PulseAudio/GPU/session-bus grants, отсутствие system bus и отказ до app marker для невалидных/недоступных ресурсов.
 - F04-T03: `bash -n tests/f04-sandbox/gui-grants/run.sh tests/run.sh` — успешно.
 - F04-T03: `python3 -c 'import ast; ast.parse(open("tests/f04-sandbox/gui-grants/probe.py", encoding="utf-8").read()); ast.parse(open("tests/f04-sandbox/gui-grants/fake_socket_server.py", encoding="utf-8").read())'` — успешно.
 - F04-T03: `git diff --check` — без замечаний.
-- F04-T03: runtime runner не запускался в этой среде; проверка сокетов/devices в реальном bwrap остаётся пользовательской live-приёмкой.
+- F04-T03: пользовательский отчёт `/tmp/isobox-test-results/f04-gui-grants.A6Iite/result.txt` на `6a781b2` остановился на первом default-deny probe. Probe сообщил `PASS GUI grant default`, но runner завершился с `default-deny probe missed its expected checkpoint`, потому что проверял marker `default-deny.started`, а probe нормализовал точку в `default-deny_started`. Исправлены marker names для обычных GUI probes и GPU probe; полная runtime-приёмка grants пока не подтверждена.
+- F04-T03: после исправления выполнены `bash -n tests/f04-sandbox/gui-grants/run.sh tests/run.sh`, Python AST parse обоих GUI probe scripts и `git diff --check` — успешно. Runtime runner после исправления не запускался.
 
-Не проверялось:
+Границы проверки:
 
-- `isobox run` не запускался, поэтому реальное чтение файлов из root, передача сигналов и коды exit status не проверены в runtime.
-- Автоматические и runtime-тесты не запускались.
-- Доступность каждой необязательной системной mount-path зависит от дистрибутива; в этом окружении их набор и вызовы bwrap не исполнялись.
-- F04-T02: не запускался bwrap с реальными profile mounts/HOME; проверка реальных mount permissions, вложенных путей, приватных режимов и повторного использования HOME остаётся runtime acceptance.
-- F04-T03: не запускался bwrap с включёнными/выключенными GUI grants; доступность сокетов, Xauthority, устройств и D-Bus в реальной сессии остаётся runtime acceptance.
+- Base root/lifecycle и profile mounts/HOME прошли на целевом пользовательском хосте по отчётам выше; в текущей локальной среде эти runtime runners не запускались.
+- Полная F04-T03 GUI-приёмка не завершена: пользовательский прогон остановился на проверке marker после default-deny probe. Wayland, X11, audio, GPU, D-Bus и negative cases этим отчётом не проверены; нужен новый прогон после исправления runner.
+- Synthetic echo services подтверждают доступ и передачу данных по Unix sockets, но не эмулируют протоколы Wayland/X11/audio/D-Bus.
