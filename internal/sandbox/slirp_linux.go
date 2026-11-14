@@ -116,12 +116,12 @@ func (process *slirpProcess) waitReady() error {
 		}
 		select {
 		case <-process.done:
-			return fmt.Errorf("slirp4netns exited during setup: %v", process.waitErr)
+			return fmt.Errorf("slirp4netns exited during setup: %w", process.waitErr)
 		default:
 			return nil
 		}
 	case <-process.done:
-		return fmt.Errorf("slirp4netns exited before network setup: %v", process.waitErr)
+		return fmt.Errorf("slirp4netns exited before network setup: %w", process.waitErr)
 	case <-timer.C:
 		return fmt.Errorf("slirp4netns did not configure the network within %s", forwarderReadyTimeout)
 	}
@@ -148,7 +148,7 @@ func (process *slirpProcess) configureForwards(rules []profile.PortRule) error {
 	}
 	select {
 	case <-process.done:
-		return fmt.Errorf("slirp4netns exited while configuring host port forwards: %v", process.waitErr)
+		return fmt.Errorf("slirp4netns exited while configuring host port forwards: %w", process.waitErr)
 	default:
 		return nil
 	}
@@ -267,7 +267,7 @@ func slirpAddHostForward(socketPath string, forward slirpHostForward) error {
 	if err != nil {
 		return err
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	_ = connection.SetDeadline(time.Now().Add(3 * time.Second))
 	if _, err := connection.Write(encoded); err != nil {
 		return err

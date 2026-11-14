@@ -83,9 +83,7 @@ func validHostname(host string) bool {
 	if len(host) == 0 || len(host) > 253 || strings.TrimSpace(host) != host {
 		return false
 	}
-	if strings.HasSuffix(host, ".") {
-		host = strings.TrimSuffix(host, ".")
-	}
+	host = strings.TrimSuffix(host, ".")
 	if host == "" {
 		return false
 	}
@@ -94,7 +92,7 @@ func validHostname(host string) bool {
 			return false
 		}
 		for _, char := range label {
-			if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '-') {
+			if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '-' {
 				return false
 			}
 		}

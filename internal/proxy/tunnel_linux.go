@@ -301,8 +301,8 @@ func (tunnel *Tunnel) handleUDP(request *udp.ForwarderRequest) bool {
 }
 
 func (tunnel *Tunnel) bridgeTCP(local, remote net.Conn) {
-	defer local.Close()
-	defer remote.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = remote.Close() }()
 	stopClose := context.AfterFunc(tunnel.ctx, func() {
 		_ = local.Close()
 		_ = remote.Close()
@@ -330,12 +330,12 @@ func (tunnel *Tunnel) bridgeTCP(local, remote net.Conn) {
 func (tunnel *Tunnel) bridgeUDP(local *gonet.UDPConn, destination string) {
 	ctx, cancel := context.WithCancel(tunnel.ctx)
 	defer cancel()
-	defer local.Close()
+	defer func() { _ = local.Close() }()
 	association, err := tunnel.client.UDPAssociate(ctx)
 	if err != nil {
 		return
 	}
-	defer association.Close()
+	defer func() { _ = association.Close() }()
 
 	closeLocalOnStop := make(chan struct{})
 	go func() {

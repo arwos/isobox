@@ -156,7 +156,7 @@ func (client *socks5Client) probe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	if err := connection.SetDeadline(time.Time{}); err != nil {
 		stopContextClose()
 		return fmt.Errorf("clear SOCKS5 probe deadline: %w", err)

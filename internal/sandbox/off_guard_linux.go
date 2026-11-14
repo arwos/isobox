@@ -404,7 +404,7 @@ func enableNftCapabilityInheritance() error {
 }
 
 func waitForStartupGate(gate net.Conn) error {
-	defer gate.Close()
+	defer func() { _ = gate.Close() }()
 	var signal [1]byte
 	if _, err := io.ReadFull(gate, signal[:]); err != nil {
 		return err
@@ -448,7 +448,7 @@ func parsePortSet(value string) ([]string, error) {
 		return nil, fmt.Errorf("empty port set")
 	}
 	seen := make(map[string]struct{})
-	var ports []string
+	ports := make([]string, 0, strings.Count(value, ",")+1)
 	for _, item := range strings.Split(value, ",") {
 		startText, endText, hasRange := strings.Cut(item, "-")
 		start, err := strconv.Atoi(startText)

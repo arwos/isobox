@@ -234,7 +234,7 @@ func directResolver(selection preflight.BackendSelection, backend preflight.Back
 		return "", nil, fmt.Errorf("host DNS configuration contains no usable IPv4 nameserver; IPv6 is disabled")
 	}
 
-	var lines []string
+	lines := make([]string, 0, len(nameservers))
 	var pastaArgs []string
 	forwardedLoopback := map[string]bool{}
 	for _, address := range nameservers {

@@ -381,7 +381,7 @@ func portForwardSpecs(rules []profile.PortRule) (string, string, error) {
 func firewallPortSets(rules []profile.PortRule) (string, string, error) {
 	var tcp, udp []string
 	for index, rule := range rules {
-		if rule.Port == 0 || rule.Port > 65535 || rule.EndPort != 0 && (rule.EndPort < rule.Port || rule.EndPort > 65535) {
+		if rule.Port == 0 || rule.EndPort != 0 && rule.EndPort < rule.Port {
 			return "", "", fmt.Errorf("profile.network.port[%d] has invalid firewall port range", index)
 		}
 		portRange := strconv.Itoa(int(rule.Port))

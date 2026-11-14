@@ -66,7 +66,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	case "integration":
 		return executeIntegration(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "isobox: unknown command %q\n\n%s", args[0], rootUsage)
+		_, _ = fmt.Fprintf(stderr, "isobox: unknown command %q\n\n%s", args[0], rootUsage)
 		return 2
 	}
 }
@@ -78,48 +78,48 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "isobox run: %v\n\n%s", err, runUsage)
+		_, _ = fmt.Fprintf(stderr, "isobox run: %v\n\n%s", err, runUsage)
 		return 2
 	}
 	profileData, err := os.ReadFile(options.ProfilePath)
 	if err != nil {
-		fmt.Fprintf(stderr, "isobox run: cannot read profile %q: %v\n", options.ProfilePath, err)
+		_, _ = fmt.Fprintf(stderr, "isobox run: cannot read profile %q: %v\n", options.ProfilePath, err)
 		return 2
 	}
 	appProfile, err := profile.DecodeProfile(profileData)
 	if err != nil {
-		fmt.Fprintf(stderr, "isobox run: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
 	}
 	settings, err := integration.LoadSettings()
 	if err != nil {
-		fmt.Fprintf(stderr, "isobox run: cannot load settings: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "isobox run: cannot load settings: %v\n", err)
 		return 2
 	}
 	effectiveProfile, err := profile.ResolveProfile(appProfile, settings)
 	if err != nil {
-		fmt.Fprintf(stderr, "isobox run: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
 	}
 	if effectiveProfile.NetworkMode == profile.NetworkModeProxy {
 		if err := inspectAndWarnProxy(effectiveProfile.Network.ProxyAlias, stderr); err != nil {
-			fmt.Fprintf(stderr, "isobox run: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "isobox run: %v\n", err)
 			return 2
 		}
 	}
 	capabilities, err := preflight.Check(effectiveProfile)
 	if err != nil {
-		fmt.Fprintf(stderr, "isobox run: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
 	}
 	network, err := sandbox.PrepareNetwork(capabilities.Network, capabilities.Pasta, capabilities.Slirp4netns)
 	if err != nil {
-		fmt.Fprintf(stderr, "isobox run: cannot prepare network: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "isobox run: cannot prepare network: %v\n", err)
 		return 2
 	}
 	command, err := sandbox.BuildCommand(capabilities.Bubblewrap, capabilities.NFT, effectiveProfile, options.ProfilePath, options.AppID, options.Command, network)
 	if err != nil {
-		fmt.Fprintf(stderr, "isobox run: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
 	}
 	command.Stdin = os.Stdin
@@ -135,7 +135,7 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 		exitCode, err = sandbox.Run(command)
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "isobox run: sandbox launch failed: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "isobox run: sandbox launch failed: %v\n", err)
 		return 125
 	}
 	return exitCode

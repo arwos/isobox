@@ -222,10 +222,10 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 		}
 	}
 	if offGuardGate != nil {
-		defer offGuardGate.Close()
+		defer func() { _ = offGuardGate.Close() }()
 	}
 	if proxyGate != nil {
-		defer proxyGate.Close()
+		defer func() { _ = proxyGate.Close() }()
 	}
 	statusFD := 3 + len(command.ExtraFiles)
 	if err := setStatusFD(command.Args, statusFD); err != nil {
@@ -243,7 +243,7 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 		}
 		return 0, fmt.Errorf("create bwrap status pipe: %w", err)
 	}
-	defer statusReader.Close()
+	defer func() { _ = statusReader.Close() }()
 	command.ExtraFiles = append(command.ExtraFiles, statusWriter)
 	var scopeUnit string
 	var systemctlPath string
@@ -433,7 +433,7 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 		case <-forwarderDone:
 			forwarderDone = nil
 			if gateReleased && !sandboxExitReported {
-				forwardingFailure = fmt.Errorf("%s stopped while the application was running: %v", network.activeBackend(), forwarder.error())
+				forwardingFailure = fmt.Errorf("%s stopped while the application was running: %w", network.activeBackend(), forwarder.error())
 				terminateLaunch(command, childPID)
 			}
 		case waitErr := <-waitResult:
@@ -574,7 +574,7 @@ func unixPeerPID(connection *net.UnixConn) (int, error) {
 		return 0, socketErr
 	}
 	if pid <= 0 {
-		return 0, fmt.Errorf("Unix peer returned invalid PID %d", pid)
+		return 0, fmt.Errorf("unix peer returned invalid PID %d", pid)
 	}
 	return pid, nil
 }
@@ -724,7 +724,7 @@ func setupNetworkBackendWithFallback(
 		primary.activeBackend(), fallback.activeBackend(), primaryErr)
 	fallbackProcess, fallbackErr := startAndPrepareNetworkBackend(fallback, namespacePID, rules, stdout, stderr, start)
 	if fallbackErr != nil {
-		return nil, fmt.Errorf("%s setup failed: %v; compatible %s fallback failed: %w",
+		return nil, fmt.Errorf("%s setup failed: %w; compatible %s fallback failed: %w",
 			primary.activeBackend(), primaryErr, fallback.activeBackend(), fallbackErr)
 	}
 	*network = fallback

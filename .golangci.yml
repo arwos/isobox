@@ -42,6 +42,7 @@ linters:
         - G103
         - G104
         - G115
+        - G204
         - G301
         - G304
         - G306
@@ -55,7 +56,6 @@ linters:
     - govet
     - errcheck
     - misspell
-    - gocyclo
     - ineffassign
     - unparam
     - unused

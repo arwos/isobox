@@ -1,0 +1,25 @@
+ver: "2"
+packages:
+  - package: isobox
+    source: isobox
+    version: git
+    architecture:
+      - amd64
+      - arm64
+    maintainer: Mikhail Knyazhev <markus621@yandex.com>
+    homepage: https://github.com/osspkg/isobox
+    description:
+      - Run Linux applications in isolated bubblewrap sandboxes
+      - Profiles configure mounts, networking, desktop access, and resource limits.
+    section: utils
+    priority: optional
+    control:
+      depends:
+        - bubblewrap
+        - passt | slirp4netns
+      build: mkdir -p build && GOOS=linux GOARCH=%arch% CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o build/isobox_%arch% ./cmd/isobox && chmod 0755 build/isobox_%arch% && install -m 0644 LICENSE build/copyright
+    data:
+      usr/bin/isobox: build/isobox_%arch%
+      usr/share/doc/isobox/copyright: build/copyright
+    ignore:
+      - .git/

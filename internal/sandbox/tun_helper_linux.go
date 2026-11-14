@@ -87,7 +87,7 @@ func RunProxyTUNHelper(args []string) (int, bool) {
 		fmt.Fprintf(os.Stderr, "isobox: cannot configure the proxy TUN interface: %v\n", err)
 		return 125, true
 	}
-	defer tunFile.Close()
+	defer func() { _ = tunFile.Close() }()
 	if ingressGuard {
 		if err := enableNftCapabilityInheritance(); err != nil {
 			fmt.Fprintf(os.Stderr, "isobox: cannot pass firewall capability to nft: %v\n", err)
@@ -126,7 +126,7 @@ func RunProxyTUNHelper(args []string) (int, bool) {
 		fmt.Fprintf(os.Stderr, "isobox: cannot connect to the proxy TUN startup gate: %v\n", err)
 		return 125, true
 	}
-	defer gate.Close()
+	defer func() { _ = gate.Close() }()
 	if err := sendProxyTUNDescriptor(gate, tunFile); err != nil {
 		fmt.Fprintf(os.Stderr, "isobox: cannot send the TUN descriptor to the host supervisor: %v\n", err)
 		return 125, true

@@ -33,7 +33,7 @@ func executeIntegration(args []string, stdout, stderr io.Writer) int {
 	case "remove":
 		return executeRemoveLauncher(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "isobox integration: unknown action %q\n\n%s", args[0], integrationUsage)
+		_, _ = fmt.Fprintf(stderr, "isobox integration: unknown action %q\n\n%s", args[0], integrationUsage)
 		return 2
 	}
 }
@@ -45,15 +45,15 @@ func executeInstallLauncher(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "isobox integration install: %v\n\n%s", err, integrationUsage)
+		_, _ = fmt.Fprintf(stderr, "isobox integration install: %v\n\n%s", err, integrationUsage)
 		return 2
 	}
 	path, err := integration.InstallLauncher(options)
 	if err != nil {
-		fmt.Fprintf(stderr, "isobox integration install: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "isobox integration install: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "Installed launcher: %s\n", path)
+	_, _ = fmt.Fprintf(stdout, "Installed launcher: %s\n", path)
 	return 0
 }
 
@@ -100,18 +100,18 @@ func executeRemoveLauncher(args []string, stdout, stderr io.Writer) int {
 	var id string
 	flags.StringVar(&id, "id", "", "stable launcher file identity")
 	if err := flags.Parse(args); err != nil {
-		fmt.Fprintf(stderr, "isobox integration remove: %v\n\n%s", err, integrationUsage)
+		_, _ = fmt.Fprintf(stderr, "isobox integration remove: %v\n\n%s", err, integrationUsage)
 		return 2
 	}
 	if flags.NArg() != 0 || id == "" {
-		fmt.Fprintf(stderr, "isobox integration remove: --id is required and positional arguments are not accepted\n\n%s", integrationUsage)
+		_, _ = fmt.Fprintf(stderr, "isobox integration remove: --id is required and positional arguments are not accepted\n\n%s", integrationUsage)
 		return 2
 	}
 	path, err := integration.RemoveLauncher(id)
 	if err != nil {
-		fmt.Fprintf(stderr, "isobox integration remove: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "isobox integration remove: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "Removed launcher: %s\n", path)
+	_, _ = fmt.Fprintf(stdout, "Removed launcher: %s\n", path)
 	return 0
 }

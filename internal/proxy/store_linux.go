@@ -333,7 +333,7 @@ func readDocument(directory string) (storeDocument, error) {
 		return storeDocument{}, fmt.Errorf("open proxy store: %w", err)
 	}
 	file := os.NewFile(uintptr(fd), path)
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		return storeDocument{}, fmt.Errorf("inspect proxy store: %w", err)
@@ -386,7 +386,7 @@ func writeDocument(directory string, document storeDocument) error {
 		return fmt.Errorf("create temporary proxy store: %w", err)
 	}
 	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
+	defer func() { _ = os.Remove(temporaryPath) }()
 	if err := temporary.Chmod(0600); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("secure temporary proxy store: %w", err)
@@ -409,7 +409,7 @@ func writeDocument(directory string, document storeDocument) error {
 	if err != nil {
 		return fmt.Errorf("open private proxy directory for sync: %w", err)
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 	if err := dir.Sync(); err != nil {
 		return fmt.Errorf("flush private proxy directory: %w", err)
 	}

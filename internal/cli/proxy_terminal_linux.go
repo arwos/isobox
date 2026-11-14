@@ -9,6 +9,7 @@ package cli
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,7 +24,7 @@ func readProxyCredentials() (string, string, error) {
 	if err != nil {
 		return "", "", fmt.Errorf("open interactive terminal; run this command from a terminal")
 	}
-	defer terminal.Close()
+	defer func() { _ = terminal.Close() }()
 	reader := bufio.NewReaderSize(terminal, 1)
 	if _, err := fmt.Fprint(terminal, "SOCKS5 username: "); err != nil {
 		return "", "", fmt.Errorf("write credential prompt")
@@ -69,7 +70,7 @@ func readTerminalLine(reader *bufio.Reader, terminal *os.File, hidden bool) (str
 	}
 }
 
-func errorsIsEOF(err error) bool { return err == io.EOF }
+func errorsIsEOF(err error) bool { return errors.Is(err, io.EOF) }
 
 func disableTerminalEcho(fd uintptr) (func(), error) {
 	var original syscall.Termios

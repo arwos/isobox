@@ -37,7 +37,7 @@ func executeProxy(args []string, stdout, stderr io.Writer) int {
 	case "remove":
 		return executeProxyRemove(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "isobox proxy: unknown action %q\n\n%s", args[0], proxyUsage)
+		_, _ = fmt.Fprintf(stderr, "isobox proxy: unknown action %q\n\n%s", args[0], proxyUsage)
 		return 2
 	}
 }
@@ -53,20 +53,20 @@ func executeProxyAdd(args []string, stdout, stderr io.Writer) int {
 		_, _ = io.WriteString(stdout, proxyUsage)
 		return 0
 	} else if err != nil {
-		fmt.Fprintf(stderr, "isobox proxy add: %v\n\n%s", err, proxyUsage)
+		_, _ = fmt.Fprintf(stderr, "isobox proxy add: %v\n\n%s", err, proxyUsage)
 		return 2
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintf(stderr, "isobox proxy add: positional arguments are not accepted\n\n%s", proxyUsage)
+		_, _ = fmt.Fprintf(stderr, "isobox proxy add: positional arguments are not accepted\n\n%s", proxyUsage)
 		return 2
 	}
 	if alias == "" || server == "" {
-		fmt.Fprintf(stderr, "isobox proxy add: --alias and --server are required\n\n%s", proxyUsage)
+		_, _ = fmt.Fprintf(stderr, "isobox proxy add: --alias and --server are required\n\n%s", proxyUsage)
 		return 2
 	}
 	auth := proxy.AuthMode(authValue)
 	if err := proxy.Validate(alias, server, auth); err != nil {
-		fmt.Fprintf(stderr, "isobox proxy add: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "isobox proxy add: %v\n", err)
 		return 2
 	}
 	var username, password string
@@ -74,27 +74,27 @@ func executeProxyAdd(args []string, stdout, stderr io.Writer) int {
 		var err error
 		username, password, err = readProxyCredentials()
 		if err != nil {
-			fmt.Fprintf(stderr, "isobox proxy add: cannot read credentials: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "isobox proxy add: cannot read credentials: %v\n", err)
 			return 1
 		}
 	}
 	if err := proxy.Add(alias, server, auth, username, password); err != nil {
-		fmt.Fprintf(stderr, "isobox proxy add: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "isobox proxy add: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "Added SOCKS5 proxy %q at %s (auth: %s).\n", alias, server, auth)
+	_, _ = fmt.Fprintf(stdout, "Added SOCKS5 proxy %q at %s (auth: %s).\n", alias, server, auth)
 	warnUnencryptedProxy(stderr, alias)
 	return 0
 }
 
 func executeProxyList(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 0 {
-		fmt.Fprintf(stderr, "isobox proxy list: no options or positional arguments are accepted\n\n%s", proxyUsage)
+		_, _ = fmt.Fprintf(stderr, "isobox proxy list: no options or positional arguments are accepted\n\n%s", proxyUsage)
 		return 2
 	}
 	items, err := proxy.List()
 	if err != nil {
-		fmt.Fprintf(stderr, "isobox proxy list: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "isobox proxy list: %v\n", err)
 		return 1
 	}
 	if len(items) == 0 {
@@ -103,7 +103,7 @@ func executeProxyList(args []string, stdout, stderr io.Writer) int {
 	}
 	_, _ = io.WriteString(stdout, "ALIAS\tSERVER\tAUTH\n")
 	for _, item := range items {
-		fmt.Fprintf(stdout, "%s\t%s\t%s\n", item.Alias, item.Server, item.Auth)
+		_, _ = fmt.Fprintf(stdout, "%s\t%s\t%s\n", item.Alias, item.Server, item.Auth)
 	}
 	return 0
 }
@@ -117,23 +117,23 @@ func executeProxyRemove(args []string, stdout, stderr io.Writer) int {
 		_, _ = io.WriteString(stdout, proxyUsage)
 		return 0
 	} else if err != nil {
-		fmt.Fprintf(stderr, "isobox proxy remove: %v\n\n%s", err, proxyUsage)
+		_, _ = fmt.Fprintf(stderr, "isobox proxy remove: %v\n\n%s", err, proxyUsage)
 		return 2
 	}
 	if flags.NArg() != 0 || alias == "" {
-		fmt.Fprintf(stderr, "isobox proxy remove: --alias is required and positional arguments are not accepted\n\n%s", proxyUsage)
+		_, _ = fmt.Fprintf(stderr, "isobox proxy remove: --alias is required and positional arguments are not accepted\n\n%s", proxyUsage)
 		return 2
 	}
 	if err := proxy.Remove(alias); err != nil {
-		fmt.Fprintf(stderr, "isobox proxy remove: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "isobox proxy remove: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "Removed SOCKS5 proxy %q.\n", alias)
+	_, _ = fmt.Fprintf(stdout, "Removed SOCKS5 proxy %q.\n", alias)
 	return 0
 }
 
 func warnUnencryptedProxy(stderr io.Writer, alias string) {
-	fmt.Fprintf(stderr, "isobox warning: SOCKS5 proxy %q does not encrypt credentials or application traffic; use it only on a trusted network.\n", alias)
+	_, _ = fmt.Fprintf(stderr, "isobox warning: SOCKS5 proxy %q does not encrypt credentials or application traffic; use it only on a trusted network.\n", alias)
 }
 
 func inspectAndWarnProxy(alias string, stderr io.Writer) error {

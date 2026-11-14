@@ -107,8 +107,9 @@ type settingsDefaultOverride struct {
 
 const (
 	unsetNetworkMode NetworkMode = "\x00isobox-unset"
-	unsetDNS                     = "\x00isobox-unset"
 )
+
+const unsetDNS = "\x00isobox-unset"
 
 // SettingsDefault contains values profiles can override.
 type SettingsDefault struct {

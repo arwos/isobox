@@ -29,3 +29,8 @@ pre-commit: install license lint tests build
 .PHONY: ci
 ci: pre-commit
 
+.PHONY: deb
+deb:
+	deb-builder build  --base-dir=build --tmp-dir=/tmp/isobox
+
+

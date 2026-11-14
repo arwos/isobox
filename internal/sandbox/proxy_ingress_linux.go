@@ -191,8 +191,8 @@ func verifyProxyIngressAddress(link netlink.Link) error {
 		if address.IPNet == nil {
 			continue
 		}
-		configuredIP := address.IPNet.IP.To4()
-		if configuredIP != nil && configuredIP.Equal(expectedIP) && bytes.Equal(address.IPNet.Mask, expectedNetwork.Mask) {
+		configuredIP := address.IP.To4()
+		if configuredIP != nil && configuredIP.Equal(expectedIP) && bytes.Equal(address.Mask, expectedNetwork.Mask) {
 			return nil
 		}
 	}
