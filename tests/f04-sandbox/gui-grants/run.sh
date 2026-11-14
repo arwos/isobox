@@ -126,6 +126,7 @@ if [[ ! -s "$ready_file" ]]; then
     fail "synthetic Unix socket server did not become ready"
 fi
 x11_display=$(cat -- "$ready_file")
+x11_socket="$fake_x11_dir/X${x11_display}"
 
 profile_path="$runtime_dir/gui-profile.unic"
 write_profile() {
