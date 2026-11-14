@@ -52,9 +52,10 @@
 - F04-T03: после исправления выполнены `bash -n tests/f04-sandbox/gui-grants/run.sh tests/run.sh`, Python AST parse обоих GUI probe scripts и `git diff --check` — успешно. Runtime runner после исправления не запускался.
 - F04-T03: пользовательский отчёт `/tmp/isobox-test-results/f04-gui-grants.iJ9hAr/result.txt` на `d0df920` подтвердил default-deny, Wayland, X11, PipeWire, PulseAudio, desktop/session-bus grants и fail-closed negative cases (`wayland-invalid`, TCP DISPLAY, remote audio, missing session bus). Runner затем завершился с `tests/f04-sandbox/gui-grants/run.sh:228: x11_socket: unbound variable` до cleanup checkpoint и GPU probe. Поэтому эта попытка не завершилась `runtime_acceptance=passed`.
 - F04-T03: после определения `x11_socket` по `fake_x11_dir` и выделенному display выполнены `bash -n tests/f04-sandbox/gui-grants/run.sh tests/run.sh`, Python AST parse обоих GUI probe scripts и `git diff --check` — успешно. Повторный runtime runner не запускался; GPU probe и финальная проверка cleanup остаются непроверенными.
+- F04-T03: пользовательский отчёт `/tmp/isobox-test-results/f04-gui-grants.4bDuLc/result.txt` на `0a567ca` завершился `runtime_acceptance=passed` на Linux Mint 7 / kernel 6.12.116 / bubblewrap 0.12.0. Проверены default-deny, Wayland, X11, PipeWire, PulseAudio, desktop/session-bus grants, fail-closed negative cases, доступ к имеющемуся GPU device и cleanup synthetic sockets.
 
 Границы проверки:
 
 - Base root/lifecycle и profile mounts/HOME прошли на целевом пользовательском хосте по отчётам выше; в текущей локальной среде эти runtime runners не запускались.
-- Полная F04-T03 GUI-приёмка не завершена: один прогон остановился на marker mismatch, следующий подтвердил default-deny, Wayland, X11, audio, D-Bus и negative cases, но упал в cleanup до GPU probe. Нужен новый полный прогон после исправления переменной `x11_socket`.
+- Полная F04-T03 GUI-приёмка подтверждена отчётом `4bDuLc`; synthetic echo services подтверждают доступ и передачу данных по Unix sockets, но не эмулируют протоколы Wayland/X11/audio/D-Bus.
 - Synthetic echo services подтверждают доступ и передачу данных по Unix sockets, но не эмулируют протоколы Wayland/X11/audio/D-Bus.
