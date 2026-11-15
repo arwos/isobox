@@ -70,3 +70,5 @@ F04-T05: `--unshare-cgroup` добавлен в bwrap argv и rootless preflight
 F04-T06: bwrap устанавливает cwd и `PWD` в `/home/isobox`; acceptance probe обновлён. `gofmt`, `go build ./...` и `git diff --check` прошли; Go сообщил о read-only GVM stat cache, сборка завершилась с кодом 0. Runtime-приёмка не запускалась.
 
 F04-T07: host passwd/group mounts заменены минимальными read-only account files; эффективные UID/GID сохраняются, пользователь назван `isobox`, HOME в passwd — `/home/isobox`. `gofmt`, `go build ./...` и `git diff --check` прошли; Go сообщил о read-only GVM stat cache, сборка завершилась с кодом 0. Runtime-приёмка не запускалась.
+
+F04-T08: managed HOME перенесён в `~/.isobox/home/<app-id>/`; acceptance runner обновлён, чтобы проверять persistence по app-id и чистить только свои уникальные тестовые каталоги. `go build ./...` и `git diff --check` прошли; runtime runner не запускался.

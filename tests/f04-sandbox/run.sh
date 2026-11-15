@@ -34,12 +34,10 @@ active_log=
 managed_home_paths=()
 
 managed_home_for() {
-    python3 - "$1" "$2" <<'PY'
-import hashlib
+    python3 - "$1" <<'PY'
 import os
 import sys
-profile = os.path.realpath(sys.argv[1])
-print(f"/tmp/isobox-{os.geteuid()}/{hashlib.sha256(profile.encode() + bytes([0]) + sys.argv[2].encode()).hexdigest()}")
+print(os.path.join(os.path.expanduser("~"), ".isobox", "home", sys.argv[1]))
 PY
 }
 
@@ -48,12 +46,12 @@ remove_managed_homes() {
         return 0
     fi
     local path
-    local expected_root="/tmp/isobox-$EUID/"
-    local digest
+    local expected_root="$HOME/.isobox/home/"
+    local app_id
     for path in "${managed_home_paths[@]}"; do
         [[ "$path" == "$expected_root"* ]] || return 1
-        digest=${path#"$expected_root"}
-        [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+        app_id=${path#"$expected_root"}
+        [[ "$app_id" =~ ^f04-[A-Za-z0-9._-]+$ ]] || return 1
         rm -rf -- "$path" || return 1
         [[ ! -e "$path" && ! -L "$path" ]] || return 1
     done
@@ -143,10 +141,12 @@ network {
 EOF
 managed_other_profile="$runtime_dir/managed-other-profile.unic"
 cp -- "$managed_profile" "$managed_other_profile"
+test_id="f04-${BASHPID}-$(date +%s)"
+app_a="$test_id-a"
+app_b="$test_id-b"
 managed_home_paths=(
-    "$(managed_home_for "$managed_profile" managed-a)"
-    "$(managed_home_for "$managed_profile" managed-b)"
-    "$(managed_home_for "$managed_other_profile" managed-a)"
+    "$(managed_home_for "$app_a")"
+    "$(managed_home_for "$app_b")"
 )
 
 run_probe() {
@@ -179,16 +179,16 @@ if [[ ! -f "$explicit_home/persisted.txt" || ! -f "$writable_source/persisted.tx
 fi
 printf 'PASS explicit HOME path, read-only mount, and writable mount\n' | tee -a "$events" "$report"
 
-run_probe managed-home-first "$managed_profile" managed-a managed-first
-run_probe managed-home-repeat "$managed_profile" managed-a managed-repeat
-run_probe different-app-id "$managed_profile" managed-b managed-isolation
-run_probe different-profile "$managed_other_profile" managed-a managed-isolation
+run_probe managed-home-first "$managed_profile" "$app_a" managed-first
+run_probe managed-home-repeat "$managed_profile" "$app_a" managed-repeat
+run_probe different-app-id "$managed_profile" "$app_b" managed-isolation
+run_probe same-app-id-other-profile "$managed_other_profile" "$app_a" managed-shared
 
 verify_managed_home() {
     local profile=$1
     local app_id=$2
     local path
-    path=$(managed_home_for "$profile" "$app_id")
+    path=$(managed_home_for "$app_id")
     python3 - "$path" <<'PY' || return 1
 import os
 import stat
@@ -202,13 +202,13 @@ PY
     printf '%s\n' "$path"
 }
 
-home_a=$(verify_managed_home "$managed_profile" managed-a) || fail "managed HOME A is not private"
-home_b=$(verify_managed_home "$managed_profile" managed-b) || fail "managed HOME B is not private"
-home_other_profile=$(verify_managed_home "$managed_other_profile" managed-a) || fail "managed HOME for the other profile is not private"
-if [[ "$home_a" == "$home_b" || "$home_a" == "$home_other_profile" || "$home_b" == "$home_other_profile" ]]; then
-    fail "different profile/app-id pairs resolved to the same managed HOME"
+home_a=$(verify_managed_home "$managed_profile" "$app_a") || fail "managed HOME A is not private"
+home_b=$(verify_managed_home "$managed_profile" "$app_b") || fail "managed HOME B is not private"
+home_other_profile=$(verify_managed_home "$managed_other_profile" "$app_a") || fail "managed HOME for the other profile is not private"
+if [[ "$home_a" == "$home_b" || "$home_a" != "$home_other_profile" ]]; then
+    fail "managed HOME does not follow app-id identity"
 fi
-printf 'PASS managed HOME persistence, isolation, ownership, and mode 0700\n' | tee -a "$events" "$report"
+printf 'PASS managed HOME persistence, app-id identity, ownership, and mode 0700\n' | tee -a "$events" "$report"
 
 missing_profile="$runtime_dir/missing-mount.unic"
 cat >"$missing_profile" <<EOF
@@ -245,7 +245,7 @@ active_log=
 if ! remove_managed_homes; then
     fail "temporary managed HOME fixtures were not removed"
 fi
-printf 'PASS temporary managed HOME fixtures cleaned\n' | tee -a "$events" "$report"
+printf 'PASS managed HOME fixtures cleaned\n' | tee -a "$events" "$report"
 
 printf 'runtime_acceptance=passed\nresult_dir=%s\n' "$result_dir" | tee -a "$report"
 printf 'result_dir=%s\n' "$result_dir"

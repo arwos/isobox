@@ -40,6 +40,8 @@ elif phase in {"explicit-repeat", "managed-repeat"}:
 elif phase == "managed-isolation":
     require(not home_marker.exists(), "a different profile/app-id pair reused another HOME")
     home_marker.write_text("isolated\n", encoding="utf-8")
+elif phase == "managed-shared":
+    require(home_marker.read_text(encoding="utf-8") == "managed-first\n", "the same app-id did not reuse its HOME across profiles")
 elif phase.startswith("explicit-"):
     raise RuntimeError("unknown explicit HOME phase: " + phase)
 elif phase.startswith("managed-"):

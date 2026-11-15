@@ -1,5 +1,21 @@
 # F05 QA
 
+## Profile port syntax update
+
+- Acceptance scenarios: `port <host-address> <port> <protocol>;` supports multiple entries; omitted protocol defaults to both; optional fourth value preserves inclusive port ranges; old block-shaped `port { ... }` syntax is rejected.
+- `gofmt -w internal/profile/schema.go internal/profile/decode.go internal/profile/decode_test.go` — успешно.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — exit 0; выведено предупреждение GVM о read-only stat cache `/home/user/.gvm/.cache`.
+- `git diff --check` — без замечаний.
+- Go tests и runtime acceptance для новой формы не запускались.
+
+## Multiple profile DNS upstreams
+
+- Acceptance scenarios: repeated IPv4 `network.dns` entries validate and retain order; profile entries replace the single global default; `direct` writes all configured resolvers; `proxy` and `egress` try upstreams in order when the prior one fails; invalid IPv6 and duplicate entries fail validation.
+- `gofmt` for the changed Go files — successfully completed.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — exit 0; GVM warned that its stat cache under `/home/user/.gvm/.cache` is read-only.
+- `git diff --check` — clean.
+- Go tests and DNS runtime acceptance for the list were not run.
+
 ## Текущий IPv4-only критерий
 
 2026-11-13 пользователь решил полностью отключить IPv6. Приложение должно видеть пустой `/proc/net/if_inet6`, включая отсутствие loopback `::1`; IPv6 sysctl в namespace должен быть включён для `all` и `default`; приложение должно стартовать с пустыми effective/permitted/inheritable/ambient capability sets и `NoNewPrivs=1`. Внешний IPv6 TCP/UDP также должен завершаться ошибкой. Ранее проверка только внешнего IPv6 была недостаточна: pasta оставляла link-local адрес.

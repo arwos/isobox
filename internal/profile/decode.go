@@ -8,8 +8,10 @@ package profile
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"go.osspkg.com/unic"
@@ -24,6 +26,7 @@ type EffectiveProfile struct {
 	Profile
 	NetworkMode NetworkMode
 	DNSServer   string
+	DNSServers  []string
 }
 
 // DecodeProfile parses and validates a UNIC application profile.
@@ -38,10 +41,130 @@ func DecodeProfile(data []byte) (Profile, error) {
 	if err := unic.Unmarshal(data, &profile); err != nil {
 		return Profile{}, fmt.Errorf("profile: %w", err)
 	}
+	ports, err := decodePortValues(profile.Network.PortValues)
+	if err != nil {
+		return Profile{}, err
+	}
+	profile.Network.Ports = ports
+	profile.Network.PortValues = nil
+	if err := decodeProxyPortRanges(profile.Network.Proxy.Allow); err != nil {
+		return Profile{}, err
+	}
 	if err := ValidateProfile(profile); err != nil {
 		return Profile{}, err
 	}
 	return profile, nil
+}
+
+func decodeProxyPortRanges(rules []ProxyAllowRule) error {
+	for ruleIndex := range rules {
+		rule := &rules[ruleIndex]
+		field := fmt.Sprintf("profile.network.proxy.allow[%d].port_range", ruleIndex)
+		entries := make([][]any, 0, len(rule.PortRangeValues))
+		if len(rule.PortRangeValues) > 0 {
+			if _, isTuple := rule.PortRangeValues[0].([]any); isTuple {
+				for _, value := range rule.PortRangeValues {
+					entry, ok := value.([]any)
+					if !ok {
+						return fmt.Errorf("%s: each entry must contain start and end ports", field)
+					}
+					entries = append(entries, entry)
+				}
+			} else {
+				entries = append(entries, rule.PortRangeValues)
+			}
+		}
+		for rangeIndex, entry := range entries {
+			rangeField := fmt.Sprintf("%s[%d]", field, rangeIndex)
+			if len(entry) != 2 {
+				return fmt.Errorf("%s: expected start and end ports", rangeField)
+			}
+			start, err := portNumber(entry[0])
+			if err != nil {
+				return fmt.Errorf("%s: invalid start port: %w", rangeField, err)
+			}
+			end, err := portNumber(entry[1])
+			if err != nil {
+				return fmt.Errorf("%s: invalid end port: %w", rangeField, err)
+			}
+			rule.PortRanges = append(rule.PortRanges, ProxyPortRange{Start: start, End: end})
+		}
+		rule.PortRangeValues = nil
+	}
+	return nil
+}
+
+func decodePortValues(values []any) ([]PortRule, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+
+	entries := make([][]any, 0, len(values))
+	if _, isTuple := values[0].([]any); isTuple {
+		for _, value := range values {
+			entry, ok := value.([]any)
+			if !ok {
+				return nil, fmt.Errorf("profile.network.port: each entry must contain host address, port, and protocol")
+			}
+			entries = append(entries, entry)
+		}
+	} else {
+		entries = append(entries, values)
+	}
+
+	ports := make([]PortRule, 0, len(entries))
+	for index, entry := range entries {
+		field := fmt.Sprintf("profile.network.port[%d]", index)
+		if len(entry) < 2 || len(entry) > 4 {
+			return nil, fmt.Errorf("%s: expected host address, port, optional protocol, and optional end port", field)
+		}
+		hostAddress, ok := entry[0].(string)
+		if !ok {
+			return nil, fmt.Errorf("%s: host address must be a string", field)
+		}
+		port, err := portNumber(entry[1])
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid port: %w", field, err)
+		}
+		protocol := PortProtocolBoth
+		if len(entry) >= 3 {
+			protocolName, ok := entry[2].(string)
+			if !ok {
+				return nil, fmt.Errorf("%s: protocol must be tcp, udp, or both", field)
+			}
+			protocol = PortProtocol(protocolName)
+		}
+		rule := PortRule{
+			HostAddress: hostAddress,
+			Port:        port,
+			Protocol:    protocol,
+		}
+		if len(entry) == 4 {
+			rule.EndPort, err = portNumber(entry[3])
+			if err != nil {
+				return nil, fmt.Errorf("%s: invalid end port: %w", field, err)
+			}
+		}
+		ports = append(ports, rule)
+	}
+	return ports, nil
+}
+
+func portNumber(value any) (uint16, error) {
+	var text string
+	switch number := value.(type) {
+	case int64:
+		text = strconv.FormatInt(number, 10)
+	case string:
+		text = number
+	default:
+		return 0, fmt.Errorf("expected an integer from 1 to 65535")
+	}
+	parsed, err := strconv.ParseUint(text, 10, 16)
+	if err != nil {
+		return 0, fmt.Errorf("expected an integer from 1 to 65535")
+	}
+	return uint16(parsed), nil
 }
 
 // DecodeSettings parses and validates global isobox settings.
@@ -144,21 +267,33 @@ func ValidateProfile(profile Profile) error {
 	}
 
 	if !validNetworkMode(profile.Network.Mode, true) {
-		return fmt.Errorf("profile.network.mode: invalid value %q; use off, direct, or proxy", profile.Network.Mode)
+		return fmt.Errorf("profile.network.mode: invalid value %q; use off, direct, proxy, or egress", profile.Network.Mode)
 	}
-	if profile.Network.DNS != "" {
-		if err := validateDNSAddress("profile.network.dns", profile.Network.DNS); err != nil {
+	seenDNS := make(map[string]struct{}, len(profile.Network.DNS))
+	for index, address := range profile.Network.DNS {
+		field := fmt.Sprintf("profile.network.dns[%d]", index)
+		if err := validateDNSAddress(field, address); err != nil {
 			return err
 		}
+		if _, exists := seenDNS[address]; exists {
+			return fmt.Errorf("%s: duplicate DNS server %q", field, address)
+		}
+		seenDNS[address] = struct{}{}
 	}
 	if profile.Network.ProxyAlias != "" && !IsValidProxyAlias(profile.Network.ProxyAlias) {
 		return fmt.Errorf("profile.network.proxy_alias: invalid alias %q; use 1-64 ASCII letters, digits, '.', '_' or '-' and start with a letter or digit", profile.Network.ProxyAlias)
 	}
-	if (profile.Network.Mode == NetworkModeOff || profile.Network.Mode == NetworkModeDirect) && profile.Network.ProxyAlias != "" {
+	if profile.Network.Mode != "" && profile.Network.Mode != NetworkModeProxy && profile.Network.ProxyAlias != "" {
 		return fmt.Errorf("profile.network.proxy_alias: cannot be used with mode %q; remove the alias or select proxy mode", profile.Network.Mode)
 	}
 	if profile.Network.Mode == NetworkModeProxy && profile.Network.ProxyAlias == "" {
 		return fmt.Errorf("profile.network.proxy_alias: required when profile.network.mode is proxy")
+	}
+	if err := validateProxyAllowRules(profile.Network.Proxy.Allow); err != nil {
+		return err
+	}
+	if err := validateResolverRecords(profile.Network.Resolver.Records); err != nil {
+		return err
 	}
 	if err := validatePortRules(profile.Network.Ports); err != nil {
 		return err
@@ -198,7 +333,7 @@ func ValidateSettings(settings Settings) error {
 		return fmt.Errorf("settings.version: unsupported version %d; use %d", settings.Version, SchemaVersion)
 	}
 	if !validNetworkMode(settings.Defaults.NetworkMode, false) {
-		return fmt.Errorf("settings.defaults.network_mode: invalid value %q; use off, direct, or proxy", settings.Defaults.NetworkMode)
+		return fmt.Errorf("settings.defaults.network_mode: invalid value %q; use off, direct, proxy, or egress", settings.Defaults.NetworkMode)
 	}
 	if settings.Defaults.DNS != "" {
 		if err := validateDNSAddress("settings.defaults.dns", settings.Defaults.DNS); err != nil {
@@ -222,19 +357,33 @@ func ResolveProfile(profile Profile, settings Settings) (EffectiveProfile, error
 	if mode == "" {
 		mode = settings.Defaults.NetworkMode
 	}
-	dns := profile.Network.DNS
-	if dns == "" {
-		dns = settings.Defaults.DNS
+	dnsServers := append([]string(nil), profile.Network.DNS...)
+	if len(dnsServers) == 0 && settings.Defaults.DNS != "" {
+		dnsServers = []string{settings.Defaults.DNS}
+	}
+	dnsServer := ""
+	if len(dnsServers) != 0 {
+		dnsServer = dnsServers[0]
 	}
 	if mode == NetworkModeProxy {
 		if profile.Network.ProxyAlias == "" {
 			return EffectiveProfile{}, fmt.Errorf("profile.network.proxy_alias: required because the effective network mode is proxy")
 		}
 	}
+	if mode != NetworkModeProxy && profile.Network.ProxyAlias != "" {
+		return EffectiveProfile{}, fmt.Errorf("profile.network.proxy_alias: only valid when the effective network mode is proxy")
+	}
+	if len(profile.Network.Proxy.Allow) != 0 && mode != NetworkModeProxy && mode != NetworkModeEgress {
+		return EffectiveProfile{}, fmt.Errorf("profile.network.proxy is only supported with network mode proxy or egress")
+	}
+	if len(profile.Network.Resolver.Records) != 0 && mode != NetworkModeEgress {
+		return EffectiveProfile{}, fmt.Errorf("profile.network.resolver is only supported with network mode egress")
+	}
 	return EffectiveProfile{
 		Profile:     profile,
 		NetworkMode: mode,
-		DNSServer:   dns,
+		DNSServer:   dnsServer,
+		DNSServers:  dnsServers,
 	}, nil
 }
 
@@ -247,7 +396,7 @@ func validNetworkMode(mode NetworkMode, allowInherit bool) bool {
 		return true
 	}
 	switch mode {
-	case NetworkModeOff, NetworkModeDirect, NetworkModeProxy:
+	case NetworkModeOff, NetworkModeDirect, NetworkModeProxy, NetworkModeEgress:
 		return true
 	default:
 		return false
@@ -296,6 +445,110 @@ func validateDNSAddress(field, value string) error {
 		return fmt.Errorf("%s: must be an IPv4 address without a port; IPv6 is disabled", field)
 	}
 	return nil
+}
+
+func validateProxyAllowRules(rules []ProxyAllowRule) error {
+	for index, rule := range rules {
+		field := fmt.Sprintf("profile.network.proxy.allow[%d]", index)
+		if len(rule.IPs) == 0 {
+			return fmt.Errorf("%s.ip: at least one IPv4 address or CIDR is required", field)
+		}
+		for ipIndex, ip := range rule.IPs {
+			ipField := fmt.Sprintf("%s.ip[%d]", field, ipIndex)
+			if strings.TrimSpace(ip) != ip || ip == "" {
+				return fmt.Errorf("%s: must be an IPv4 address or CIDR", ipField)
+			}
+			if strings.Contains(ip, "/") {
+				prefix, err := netip.ParsePrefix(ip)
+				if err != nil || !prefix.Addr().Is4() {
+					return fmt.Errorf("%s: must be an IPv4 address or CIDR; IPv6 is disabled", ipField)
+				}
+			} else {
+				address, err := netip.ParseAddr(ip)
+				if err != nil || !address.Is4() {
+					return fmt.Errorf("%s: must be an IPv4 address or CIDR; IPv6 is disabled", ipField)
+				}
+			}
+		}
+		if rule.Protocol != "" && rule.Protocol != PortProtocolBoth && rule.Protocol != PortProtocolTCP && rule.Protocol != PortProtocolUDP {
+			return fmt.Errorf("%s.protocol: invalid value %q; use both, tcp, or udp", field, rule.Protocol)
+		}
+		for portIndex, port := range rule.Ports {
+			if port == 0 {
+				return fmt.Errorf("%s.port[%d]: must be between 1 and 65535", field, portIndex)
+			}
+		}
+		for rangeIndex, portRange := range rule.PortRanges {
+			rangeField := fmt.Sprintf("%s.port_range[%d]", field, rangeIndex)
+			if portRange.Start == 0 || portRange.End == 0 {
+				return fmt.Errorf("%s: start and end must be between 1 and 65535", rangeField)
+			}
+			if portRange.End < portRange.Start {
+				return fmt.Errorf("%s.end: must be greater than or equal to start", rangeField)
+			}
+		}
+	}
+	return nil
+}
+
+func validateResolverRecords(records []ResolverRecord) error {
+	seen := make(map[string]map[netip.Addr]struct{}, len(records))
+	counts := make(map[string]int, len(records))
+	for index, record := range records {
+		field := fmt.Sprintf("profile.network.resolver.record[%d]", index)
+		domain, err := NormalizeDomain(record.Domain)
+		if err != nil {
+			return fmt.Errorf("%s: %w", field, err)
+		}
+		if len(record.IPs) == 0 {
+			return fmt.Errorf("%s: at least one IPv4 ip is required", field)
+		}
+		for ipIndex, value := range record.IPs {
+			ipField := fmt.Sprintf("%s.ip[%d]", field, ipIndex)
+			address, err := netip.ParseAddr(value)
+			if err != nil || !address.Is4() {
+				return fmt.Errorf("%s: must be an IPv4 address; IPv6 is disabled", ipField)
+			}
+			if seen[domain] == nil {
+				seen[domain] = make(map[netip.Addr]struct{})
+			}
+			if _, exists := seen[domain][address]; exists {
+				return fmt.Errorf("%s: duplicate IPv4 address %s for domain %q", ipField, address, domain)
+			}
+			seen[domain][address] = struct{}{}
+			counts[domain]++
+			if counts[domain] > maxResolverAddressesPerDomain {
+				return fmt.Errorf("%s: domain %q has more than %d IPv4 records", ipField, domain, maxResolverAddressesPerDomain)
+			}
+		}
+	}
+	return nil
+}
+
+const maxResolverAddressesPerDomain = 16
+
+// NormalizeDomain validates and normalizes one exact DNS domain name.
+// A final root dot is optional; wildcard and non-ASCII names are not accepted.
+func NormalizeDomain(value string) (string, error) {
+	if value == "" || strings.TrimSpace(value) != value {
+		return "", fmt.Errorf("must be an exact domain name without surrounding whitespace")
+	}
+	name := strings.TrimSuffix(value, ".")
+	if len(name) == 0 || len(name) > 253 {
+		return "", fmt.Errorf("domain name length must be between 1 and 253 bytes")
+	}
+	for _, label := range strings.Split(name, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return "", fmt.Errorf("domain name contains an invalid label")
+		}
+		for _, character := range label {
+			valid := character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '-'
+			if !valid {
+				return "", fmt.Errorf("domain name must use ASCII letters, digits, dots, and hyphens only")
+			}
+		}
+	}
+	return strings.ToLower(name), nil
 }
 
 func validatePortRules(ports []PortRule) error {

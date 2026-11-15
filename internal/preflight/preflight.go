@@ -109,7 +109,7 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 	if err != nil {
 		issues = append(issues, fmt.Sprintf("network backend cannot preserve the profile: %v", err))
 	}
-	requiresIngressGuard := (config.NetworkMode == profile.NetworkModeOff || config.NetworkMode == profile.NetworkModeProxy) && len(config.Network.Ports) != 0
+	requiresIngressGuard := (config.NetworkMode == profile.NetworkModeOff || config.NetworkMode == profile.NetworkModeProxy || config.NetworkMode == profile.NetworkModeEgress) && len(config.Network.Ports) != 0
 	if requiresIngressGuard {
 		capabilities.NFT, err = exec.LookPath("nft")
 		if err != nil {
@@ -131,16 +131,17 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 		}
 	}
 
-	if config.NetworkMode == profile.NetworkModeProxy {
+	if config.NetworkMode == profile.NetworkModeProxy || config.NetworkMode == profile.NetworkModeEgress {
+		modeLabel := string(config.NetworkMode)
 		if err := probeTUN(); err != nil {
-			issues = append(issues, fmt.Sprintf("proxy mode cannot create a TUN interface in a user network namespace: %v; make the kernel TUN driver and /dev/net/tun available, allow the current user to open the device, and permit CAP_NET_ADMIN in the new network namespace", err))
+			issues = append(issues, fmt.Sprintf("%s mode cannot create a TUN interface in a user network namespace: %v; make the kernel TUN driver and /dev/net/tun available, allow the current user to open the device, and permit CAP_NET_ADMIN in the new network namespace", modeLabel, err))
 		}
 		if capabilities.Bubblewrap != "" {
 			options, inspectErr := inspectOptions(capabilities.Bubblewrap)
 			if inspectErr != "" {
 				issues = append(issues, fmt.Sprintf("cannot verify bwrap proxy TUN setup options: %s", inspectErr))
 			} else if !hasAllOptions(options, "--cap-add", "--dev-bind", "--ro-bind-data", "--json-status-fd") {
-				issues = append(issues, "installed bwrap lacks options required to create the proxy TUN interface and hold application startup until SOCKS5 is ready; update bubblewrap and retry")
+				issues = append(issues, "installed bwrap lacks options required to create the proxy TUN interface and hold application startup until the network data plane is ready; update bubblewrap and retry")
 			}
 		}
 		if len(config.Network.Ports) != 0 && capabilities.Bubblewrap != "" {
@@ -168,7 +169,7 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 			issues = append(issues, "installed bwrap lacks the capability option required to disable IPv6 before the application starts; update bubblewrap and retry")
 		}
 	}
-	if (config.NetworkMode == profile.NetworkModeOff || config.NetworkMode == profile.NetworkModeProxy) && len(config.Network.Ports) != 0 && config.Limits.ProcessCount != 0 {
+	if (config.NetworkMode == profile.NetworkModeOff || config.NetworkMode == profile.NetworkModeProxy || config.NetworkMode == profile.NetworkModeEgress) && len(config.Network.Ports) != 0 && config.Limits.ProcessCount != 0 {
 		if _, err := exec.LookPath("systemctl"); err != nil {
 			issues = append(issues, fmt.Sprintf("network mode %s with published ports and process_count requires systemctl to remove the temporary firewall-setup task allowance before application startup; install systemd or remove process_count", config.NetworkMode))
 		}

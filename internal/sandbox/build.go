@@ -83,7 +83,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	if err := validateProfileMountTargets(profileMounts); err != nil {
 		return nil, err
 	}
-	if config.NetworkMode == profile.NetworkModeDirect || config.NetworkMode == profile.NetworkModeProxy {
+	if config.NetworkMode == profile.NetworkModeDirect || config.NetworkMode == profile.NetworkModeProxy || config.NetworkMode == profile.NetworkModeEgress {
 		for _, mount := range profileMounts {
 			if mountTargetsOverlap(mount.target, "/etc/resolv.conf") {
 				return nil, fmt.Errorf("profile mount target %q conflicts with the network DNS configuration", mount.target)
@@ -94,12 +94,12 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 
 	offGuard := config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) != 0
 	directNetwork := config.NetworkMode == profile.NetworkModeDirect
-	proxyNetwork := config.NetworkMode == profile.NetworkModeProxy
+	proxyNetwork := config.NetworkMode == profile.NetworkModeProxy || config.NetworkMode == profile.NetworkModeEgress
 	proxyIngress := proxyNetwork && len(config.Network.Ports) != 0
 	ipv4Setup := directNetwork || config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) == 0
 	activeBackend := network.activeBackend()
 	args := []string{"--unshare-user"}
-	// Proxy mode creates its network namespace in the trusted helper, after
+	// Policy TUN modes create their network namespace in the trusted helper, after
 	// bwrap has finished its user-namespace setup for --dev/devpts. That keeps
 	// CAP_NET_ADMIN in the user namespace that owns the network namespace.
 	// The helper installs namespace-blocking seccomp before app exec.
@@ -366,7 +366,7 @@ func validateSupportedProfile(config profile.EffectiveProfile, network NetworkRu
 	if network.Mode != config.NetworkMode {
 		return fmt.Errorf("selected network mode %q does not match profile mode %q", network.Mode, config.NetworkMode)
 	}
-	if len(config.Network.Ports) != 0 && config.NetworkMode != profile.NetworkModeOff && config.NetworkMode != profile.NetworkModeDirect && config.NetworkMode != profile.NetworkModeProxy {
+	if len(config.Network.Ports) != 0 && config.NetworkMode != profile.NetworkModeOff && config.NetworkMode != profile.NetworkModeDirect && config.NetworkMode != profile.NetworkModeProxy && config.NetworkMode != profile.NetworkModeEgress {
 		return fmt.Errorf("profile.network.port is not supported with network mode %q; refusing to ignore published ports", config.NetworkMode)
 	}
 	if config.NetworkMode == profile.NetworkModeDirect {
@@ -378,19 +378,33 @@ func validateSupportedProfile(config profile.EffectiveProfile, network NetworkRu
 		}
 		return nil
 	}
-	if config.NetworkMode == profile.NetworkModeProxy {
-		if network.activeBackend() != "proxy-tun" || network.ProxyAlias == "" {
-			return fmt.Errorf("proxy network mode requires the selected proxy TUN backend and a stored proxy alias")
+	if config.NetworkMode == profile.NetworkModeProxy || config.NetworkMode == profile.NetworkModeEgress {
+		if network.activeBackend() != "proxy-tun" {
+			return fmt.Errorf("network mode %q requires the selected policy TUN backend", config.NetworkMode)
 		}
 		if string(network.Resolver) != "nameserver "+proxy.TransparentDNSAddress+"\n" {
-			return fmt.Errorf("proxy network mode requires the internal DNS endpoint routed through the TUN")
+			return fmt.Errorf("network mode %q requires the internal DNS endpoint routed through the TUN", config.NetworkMode)
 		}
-		dnsAddress := net.ParseIP(network.ProxyDNSAddress)
-		if dnsAddress == nil || dnsAddress.To4() == nil || strings.Contains(network.ProxyDNSAddress, ":") {
-			return fmt.Errorf("proxy network mode requires an IPv4 DNS destination for the SOCKS data plane")
+		if config.NetworkMode == profile.NetworkModeProxy {
+			if network.ProxyAlias == "" {
+				return fmt.Errorf("proxy network mode requires a stored SOCKS5 alias")
+			}
+			if len(networkDNSAddresses(network)) == 0 {
+				return fmt.Errorf("proxy network mode requires an IPv4 DNS destination for the SOCKS data plane")
+			}
+		} else {
+			if network.ProxyAlias != "" {
+				return fmt.Errorf("egress mode cannot use a remote SOCKS5 alias")
+			}
+			for _, address := range networkDNSAddresses(network) {
+				dnsAddress := net.ParseIP(address)
+				if dnsAddress == nil || dnsAddress.To4() == nil || strings.Contains(address, ":") {
+					return fmt.Errorf("egress upstream DNS must be IPv4")
+				}
+			}
 		}
 		if len(config.Network.Ports) != 0 && (network.PortForwarder != "pasta" || network.ForwarderExecutable == "" || !network.EnforceEgressFilter) {
-			return fmt.Errorf("proxy mode with published ports requires explicit pasta ingress forwarding and an enforced egress filter")
+			return fmt.Errorf("network mode %q with published ports requires explicit pasta ingress forwarding and an enforced egress filter", config.NetworkMode)
 		}
 		return nil
 	}
@@ -399,6 +413,16 @@ func validateSupportedProfile(config profile.EffectiveProfile, network NetworkRu
 	}
 	if len(config.Network.Ports) != 0 && network.activeBackend() != "pasta" {
 		return fmt.Errorf("network mode off with published ports requires the pasta forwarding backend")
+	}
+	return nil
+}
+
+func networkDNSAddresses(network NetworkRuntime) []string {
+	if len(network.ProxyDNSAddresses) != 0 {
+		return network.ProxyDNSAddresses
+	}
+	if network.ProxyDNSAddress != "" {
+		return []string{network.ProxyDNSAddress}
 	}
 	return nil
 }

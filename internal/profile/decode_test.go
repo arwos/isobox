@@ -19,7 +19,7 @@ func TestDecodeProfileRoundTrip(t *testing.T) {
 		}},
 		Network: NetworkConfig{
 			Mode: NetworkModeDirect,
-			DNS:  "192.0.2.53",
+			DNS:  []string{"192.0.2.53"},
 			Ports: []PortRule{
 				{HostAddress: "127.0.0.1", Port: 8080, Protocol: PortProtocolTCP},
 				{HostAddress: "127.0.0.1", Port: 9000, EndPort: 9002, Protocol: PortProtocolBoth},
@@ -34,7 +34,13 @@ func TestDecodeProfileRoundTrip(t *testing.T) {
 		},
 	}
 
-	data, err := unic.Marshal(&want)
+	wireProfile := want
+	wireProfile.Network.Ports = nil
+	wireProfile.Network.PortValues = []any{
+		[]any{"127.0.0.1", int64(8080), "tcp"},
+		[]any{"127.0.0.1", int64(9000), "both", int64(9002)},
+	}
+	data, err := unic.Marshal(&wireProfile)
 	if err != nil {
 		t.Fatalf("marshal profile: %v", err)
 	}
@@ -72,11 +78,11 @@ func TestDecodeProfileRejectsIPv6NetworkSettings(t *testing.T) {
 		},
 		{
 			name: "IPv6 host bind",
-			data: `version 1; network { mode off; port { host_address '::1'; port 8080; } }`,
+			data: `version 1; network { mode off; port '::1' 8080 both; }`,
 		},
 		{
 			name: "IPv4-mapped IPv6 host bind",
-			data: `version 1; network { mode off; port { host_address '::ffff:192.0.2.10'; port 8080; } }`,
+			data: `version 1; network { mode off; port '::ffff:192.0.2.10' 8080 both; }`,
 		},
 	}
 	for _, test := range tests {
@@ -115,7 +121,7 @@ func TestSettingsOverridesMergeByFieldBeforeProfile(t *testing.T) {
 	}
 	got, err := ResolveProfile(Profile{
 		Version: SchemaVersion,
-		Network: NetworkConfig{DNS: "203.0.113.53"},
+		Network: NetworkConfig{DNS: []string{"203.0.113.53"}},
 	}, user)
 	if err != nil {
 		t.Fatalf("resolve profile: %v", err)

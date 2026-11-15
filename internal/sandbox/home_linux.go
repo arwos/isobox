@@ -8,15 +8,13 @@
 package sandbox
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"syscall"
 )
 
-func resolveHome(profileHome, profilePath, appID string) (string, error) {
+func resolveHome(profileHome, _ string, appID string) (string, error) {
 	if profileHome != "" {
 		if !filepath.IsAbs(profileHome) || filepath.Clean(profileHome) != profileHome {
 			return "", fmt.Errorf("profile.home_path must be a clean absolute path")
@@ -41,43 +39,41 @@ func resolveHome(profileHome, profilePath, appID string) (string, error) {
 		return "", fmt.Errorf("profile.home_path is empty; pass --app-id to create a persistent isolated HOME")
 	}
 
-	canonicalProfile, err := filepath.Abs(profilePath)
-	if err != nil {
-		return "", fmt.Errorf("resolve profile path %q: %w", profilePath, err)
+	if !validManagedHomeAppID(appID) {
+		return "", fmt.Errorf("--app-id must contain only letters, digits, '.', '_' or '-' and start with a letter or digit")
 	}
-	canonicalProfile, err = filepath.EvalSymlinks(canonicalProfile)
-	if err != nil {
-		return "", fmt.Errorf("resolve profile path %q: %w", profilePath, err)
+	userHome, err := os.UserHomeDir()
+	if err != nil || userHome == "" {
+		return "", fmt.Errorf("cannot determine the user's home directory for persistent HOME storage")
 	}
-	profileInfo, err := os.Stat(canonicalProfile)
-	if err != nil {
-		return "", fmt.Errorf("inspect profile path %q: %w", canonicalProfile, err)
+	privateRoot := filepath.Join(userHome, ".isobox")
+	homeRoot := filepath.Join(privateRoot, "home")
+	for _, directory := range []string{privateRoot, homeRoot} {
+		if err := ensurePrivateDirectory(directory); err != nil {
+			return "", fmt.Errorf("prepare private HOME directory %q: %w", directory, err)
+		}
 	}
-	if !profileInfo.Mode().IsRegular() {
-		return "", fmt.Errorf("profile path %q must be a regular file to identify its persistent HOME", canonicalProfile)
-	}
-
-	tempInfo, err := os.Lstat("/tmp")
-	if err != nil {
-		return "", fmt.Errorf("inspect /tmp for persistent HOME: %w", err)
-	}
-	if !tempInfo.IsDir() || tempInfo.Mode()&os.ModeSymlink != 0 || tempInfo.Mode()&os.ModeSticky == 0 {
-		return "", fmt.Errorf("/tmp must be a real directory with the sticky bit enabled for persistent HOME storage")
-	}
-
-	uid := os.Geteuid()
-	privateRoot := filepath.Join("/tmp", "isobox-"+strconv.Itoa(uid))
-	if err := ensurePrivateDirectory(privateRoot); err != nil {
-		return "", fmt.Errorf("prepare private HOME root %q: %w", privateRoot, err)
-	}
-	identity := append([]byte(canonicalProfile), 0)
-	identity = append(identity, appID...)
-	digest := sha256.Sum256(identity)
-	home := filepath.Join(privateRoot, fmt.Sprintf("%x", digest[:]))
+	home := filepath.Join(homeRoot, appID)
 	if err := ensurePrivateDirectory(home); err != nil {
 		return "", fmt.Errorf("prepare persistent HOME %q: %w", home, err)
 	}
 	return home, nil
+}
+
+func validManagedHomeAppID(appID string) bool {
+	if len(appID) == 0 || len(appID) > 64 {
+		return false
+	}
+	for index, character := range appID {
+		valid := character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9'
+		if index > 0 {
+			valid = valid || character == '.' || character == '_' || character == '-'
+		}
+		if !valid {
+			return false
+		}
+	}
+	return true
 }
 
 func ensurePrivateDirectory(path string) error {

@@ -74,12 +74,7 @@ def write_profile(
         start, end = port_range
         lines.extend(
             [
-                "  port {",
-                f"    host_address '{host_address}';",
-                f"    port {start};",
-                f"    end_port {end};",
-                *([f"    protocol {protocol};"] if protocol else []),
-                "  }",
+                f"  port '{host_address}' {start} {protocol or 'both'} {end};",
             ]
         )
     lines.append("}")

@@ -37,7 +37,10 @@ type BackendSelection struct {
 	DisableAutomaticForwarding bool
 	EnforceEgressFilter        bool
 	ProxyAlias                 string
+	ProxyAllowRules            []profile.ProxyAllowRule
+	ResolverRecords            []profile.ResolverRecord
 	DNSAddress                 string
+	DNSAddresses               []string
 	UseHostDNS                 bool
 	FallbackReason             string
 }
@@ -49,8 +52,11 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 	selection := BackendSelection{
 		Mode:            config.NetworkMode,
 		DNSAddress:      config.DNSServer,
-		UseHostDNS:      config.DNSServer == "",
+		DNSAddresses:    append([]string(nil), config.DNSServers...),
+		UseHostDNS:      len(config.DNSServers) == 0 && config.DNSServer == "",
 		ProxyAlias:      config.Network.ProxyAlias,
+		ProxyAllowRules: append([]profile.ProxyAllowRule(nil), config.Network.Proxy.Allow...),
+		ResolverRecords: append([]profile.ResolverRecord(nil), config.Network.Resolver.Records...),
 		HostForwards:    append([]profile.PortRule(nil), config.Network.Ports...),
 		FallbackNetwork: BackendNone,
 	}
@@ -79,14 +85,17 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 		selection.DisableAutomaticForwarding = true
 		selection.EnforceEgressFilter = true
 		return selection, nil
-	case profile.NetworkModeProxy:
+	case profile.NetworkModeProxy, profile.NetworkModeEgress:
+		if config.NetworkMode == profile.NetworkModeEgress {
+			selection.UseHostDNS = false
+		}
 		if len(config.Network.Ports) == 0 {
 			selection.Network = BackendProxyTUN
 			selection.PortForwarder = BackendNone
 			return selection, nil
 		}
 		if capabilities.Pasta == "" {
-			return BackendSelection{}, fmt.Errorf("proxy mode with published ports requires pasta's explicit ingress forwarding path; install passt (pasta) and retry")
+			return BackendSelection{}, fmt.Errorf("network mode %q with published ports requires pasta's explicit ingress forwarding path; install passt (pasta) and retry", config.NetworkMode)
 		}
 		if capabilities.PastaInspectionError != "" {
 			return BackendSelection{}, fmt.Errorf("cannot verify pasta's proxy ingress options: %s", capabilities.PastaInspectionError)
@@ -125,7 +134,17 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 		selection.Network = BackendPasta
 		selection.PortForwarder = BackendPasta
 		selection.DisableAutomaticForwarding = true
-		if slirpSupported && directFallbackDNSCompatible(config.DNSServer) && validateHostForwards(config.Network.Ports) == nil {
+		dnsCompatible := true
+		for _, address := range selection.DNSAddresses {
+			if !directFallbackDNSCompatible(address) {
+				dnsCompatible = false
+				break
+			}
+		}
+		if len(selection.DNSAddresses) == 0 && selection.DNSAddress != "" {
+			dnsCompatible = directFallbackDNSCompatible(selection.DNSAddress)
+		}
+		if slirpSupported && dnsCompatible && validateHostForwards(config.Network.Ports) == nil {
 			selection.FallbackNetwork = BackendSlirp4netns
 		}
 		return selection, nil

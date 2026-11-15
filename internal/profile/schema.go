@@ -16,6 +16,7 @@ const (
 	NetworkModeOff    NetworkMode = "off"
 	NetworkModeDirect NetworkMode = "direct"
 	NetworkModeProxy  NetworkMode = "proxy"
+	NetworkModeEgress NetworkMode = "egress"
 )
 
 // PortProtocol selects which transport protocols a published port rule exposes.
@@ -51,9 +52,46 @@ type Mount struct {
 // An empty Mode inherits the user's isobox default; the built-in default is off.
 type NetworkConfig struct {
 	Mode       NetworkMode `unic:"mode,omitempty"`
-	DNS        string      `unic:"dns,omitempty"`
+	DNS        []string    `unic:"dns,omitempty"`
 	ProxyAlias string      `unic:"proxy_alias,omitempty"`
-	Ports      []PortRule  `unic:"port,omitempty"`
+	Proxy      ProxyPolicy `unic:"proxy"`
+	Resolver   Resolver    `unic:"resolver"`
+	Ports      []PortRule  `unic:"-"`              // Normalized host forwards used by runtime code.
+	PortValues []any       `unic:"port,omitempty"` // Raw positional UNIC values, normalized by DecodeProfile.
+}
+
+// ProxyPolicy contains explicit destination rules for egress and optional
+// filtering when used with an external SOCKS5 proxy.
+type ProxyPolicy struct {
+	Allow []ProxyAllowRule `unic:"allow,omitempty"`
+}
+
+// ProxyAllowRule grants one or more IPv4 destinations or prefixes, with
+// optional transport and destination port limits. Empty port sets mean any
+// port.
+type ProxyAllowRule struct {
+	IPs             []string         `unic:"ip"`
+	Ports           []uint16         `unic:"port,omitempty"`
+	PortRanges      []ProxyPortRange `unic:"-"`                    // Normalized inclusive port ranges.
+	PortRangeValues []any            `unic:"port_range,omitempty"` // Positional start/end values, normalized by DecodeProfile.
+	Protocol        PortProtocol     `unic:"protocol,default=both"`
+}
+
+// ProxyPortRange is an inclusive destination port range.
+type ProxyPortRange struct {
+	Start uint16
+	End   uint16
+}
+
+// Resolver contains static IPv4 DNS records used by egress mode.
+type Resolver struct {
+	Records []ResolverRecord `unic:"record,omitempty"`
+}
+
+// ResolverRecord maps one exact domain name to one or more IPv4 addresses.
+type ResolverRecord struct {
+	Domain string   `unic:"domain,attr=1"`
+	IPs    []string `unic:"ip,omitempty"`
 }
 
 // PortRule publishes the same port number on the host and in the sandbox.

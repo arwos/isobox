@@ -336,11 +336,7 @@ mount {
 network {
   mode proxy;
   proxy_alias 'f06-runtime';
-  port {
-    host_address '127.0.0.1';
-    port $host_port;
-    protocol tcp;
-  }
+  port 127.0.0.1 $host_port tcp;
 }
 EOF
 

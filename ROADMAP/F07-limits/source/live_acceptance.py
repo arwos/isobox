@@ -23,11 +23,7 @@ def write_profile(root, limits, published_port=None):
             [
                 "network {",
                 "  mode off;",
-                "  port {",
-                "    host_address '127.0.0.1';",
-                f"    port {published_port};",
-                "    protocol tcp;",
-                "  }",
+                f"  port 127.0.0.1 {published_port} tcp;",
                 "}",
             ]
         )

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 const defaultProfileFileName = "default.unic"
@@ -28,13 +29,20 @@ func EnsureProfileForApp(appID string) (string, error) {
 	if appID != "" && !validProfileAppID(appID) {
 		return "", fmt.Errorf("invalid app-id %q for profile lookup", appID)
 	}
-	base, err := userConfigHome()
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("locate isobox default profile directory: %w", err)
+		return "", fmt.Errorf("locate isobox home directory: %w", err)
 	}
-	directory := filepath.Join(base, "isobox")
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return "", fmt.Errorf("create isobox config directory %q: %w", directory, err)
+	if home == "" {
+		return "", fmt.Errorf("cannot determine the user's home directory for isobox profiles")
+	}
+	root := filepath.Join(home, ".isobox")
+	directory := filepath.Join(root, "config")
+	if err := ensurePrivateProfileDirectory(root); err != nil {
+		return "", fmt.Errorf("prepare isobox directory %q: %w", root, err)
+	}
+	if err := ensurePrivateProfileDirectory(directory); err != nil {
+		return "", fmt.Errorf("prepare isobox config directory %q: %w", directory, err)
 	}
 	if appID != "" {
 		appProfile := filepath.Join(directory, appID+".unic")
@@ -80,16 +88,50 @@ func validProfileAppID(value string) bool {
 	return true
 }
 
+func ensurePrivateProfileDirectory(path string) error {
+	err := os.Mkdir(path, 0o700)
+	if err != nil && !os.IsExist(err) {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("path must be a real directory")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != uint32(os.Geteuid()) {
+		return fmt.Errorf("directory is not owned by the current user")
+	}
+	if info.Mode().Perm() != 0o700 {
+		if err := os.Chmod(path, 0o700); err != nil {
+			return fmt.Errorf("set directory mode to 0700: %w", err)
+		}
+		info, err = os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		stat, ok = info.Sys().(*syscall.Stat_t)
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !ok || stat.Uid != uint32(os.Geteuid()) || info.Mode().Perm() != 0o700 {
+			return fmt.Errorf("directory owner or mode changed while securing it")
+		}
+	}
+	return nil
+}
+
+// userConfigHome is kept for integrations that use standard XDG locations,
+// such as user systemd units. Isobox profiles use ~/.isobox/config directly.
 func userConfigHome() (string, error) {
 	if directory := os.Getenv("XDG_CONFIG_HOME"); filepath.IsAbs(directory) {
 		return filepath.Clean(directory), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("cannot determine the user's home directory for the default profile: %w", err)
+		return "", fmt.Errorf("cannot determine the user's configuration directory: %w", err)
 	}
 	if home == "" {
-		return "", fmt.Errorf("cannot determine the user's home directory for the default profile")
+		return "", fmt.Errorf("cannot determine the user's configuration directory")
 	}
 	return filepath.Join(home, ".config"), nil
 }

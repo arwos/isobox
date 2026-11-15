@@ -42,11 +42,7 @@ def write_profile(root, home, port):
                 f"home_path '{home}';",
                 "network {",
                 "  mode off;",
-                "  port {",
-                "    host_address '127.0.0.1';",
-                f"    port {port};",
-                "    protocol both;",
-                "  }",
+                f"  port 127.0.0.1 {port} both;",
                 "}",
                 "",
             ]

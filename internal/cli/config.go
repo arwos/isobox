@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -113,6 +114,16 @@ func printLaunchPlan(output io.Writer, options RunOptions, effective profile.Eff
 	row("App ID", valueOr(options.AppID, "не задан"))
 	row("HOME в sandbox", homeSourceFromArgs(bubblewrapArgs))
 	row("Сеть", string(effective.NetworkMode))
+	if effective.NetworkMode == profile.NetworkModeEgress {
+		appID := options.AppID
+		if appID == "" {
+			appID = "default"
+		}
+		home, err := os.UserHomeDir()
+		if err == nil && home != "" {
+			row("Egress event log", filepath.Join(home, ".isobox", "log", appID+".log"))
+		}
+	}
 	row("Сетевой backend", backendName(network.Backend))
 	if network.Executable != "" {
 		row("Исполняемый файл backend", strconv.Quote(network.Executable))
@@ -126,7 +137,22 @@ func printLaunchPlan(output io.Writer, options RunOptions, effective profile.Eff
 	if network.Fallback != nil {
 		row("Fallback backend", backendName(network.Fallback.Backend))
 	}
-	row("Egress filter", strconv.FormatBool(network.EnforceEgressFilter))
+	if effective.NetworkMode == profile.NetworkModeEgress {
+		policy := "обязательный allowlist"
+		if len(effective.Network.Proxy.Allow) == 0 {
+			policy = "правил нет; весь egress закрыт"
+		}
+		row("Host egress policy", policy)
+	} else if effective.NetworkMode == profile.NetworkModeProxy {
+		if len(effective.Network.Proxy.Allow) == 0 {
+			row("Host egress policy", "нет дополнительного allowlist")
+		} else {
+			row("Host egress policy", "allowlist перед SOCKS5")
+		}
+	}
+	if network.PortForwarder == preflight.BackendPasta {
+		row("Pasta egress filter", strconv.FormatBool(network.EnforceEgressFilter))
+	}
 	if len(network.PastaDNSArgs) > 0 {
 		args := make([]string, len(network.PastaDNSArgs))
 		for index, argument := range network.PastaDNSArgs {
@@ -137,8 +163,22 @@ func printLaunchPlan(output io.Writer, options RunOptions, effective profile.Eff
 	if len(network.Resolver) > 0 {
 		row("Resolver в sandbox", strings.TrimSpace(string(network.Resolver)))
 	}
-	if network.ProxyDNSAddress != "" {
-		row("DNS через proxy", network.ProxyDNSAddress)
+	if len(network.ProxyDNSAddresses) != 0 {
+		row("Upstream DNS", strings.Join(network.ProxyDNSAddresses, ", "))
+	} else if network.ProxyDNSAddress != "" {
+		row("Upstream DNS", network.ProxyDNSAddress)
+	} else if effective.NetworkMode == profile.NetworkModeEgress {
+		row("Upstream DNS", "не задан; неизвестные имена отклоняются")
+	}
+	for index, rule := range effective.Network.Proxy.Allow {
+		protocol := rule.Protocol
+		if protocol == "" {
+			protocol = profile.PortProtocolBoth
+		}
+		row(fmt.Sprintf("Egress allow[%d]", index), fmt.Sprintf("%s ports=%s protocol=%s", strings.Join(rule.IPs, ","), allowPortDescription(rule), protocol))
+	}
+	for index, record := range effective.Network.Resolver.Records {
+		row(fmt.Sprintf("DNS record[%d]", index), record.Domain+" → "+strings.Join(record.IPs, ","))
 	}
 	for index, port := range effective.Network.Ports {
 		endPort := ""
@@ -169,6 +209,24 @@ func printLaunchPlan(output io.Writer, options RunOptions, effective profile.Eff
 		row(fmt.Sprintf("bwrap argv[%d]", index), strconv.Quote(argument))
 	}
 	_ = writer.Flush()
+}
+
+func allowPortDescription(rule profile.ProxyAllowRule) string {
+	if len(rule.Ports) == 0 && len(rule.PortRanges) == 0 {
+		return "любой"
+	}
+	ports := make([]string, 0, len(rule.Ports)+len(rule.PortRanges))
+	for _, port := range rule.Ports {
+		ports = append(ports, strconv.Itoa(int(port)))
+	}
+	for _, portRange := range rule.PortRanges {
+		if portRange.Start == portRange.End {
+			ports = append(ports, strconv.Itoa(int(portRange.Start)))
+		} else {
+			ports = append(ports, fmt.Sprintf("%d-%d", portRange.Start, portRange.End))
+		}
+	}
+	return strings.Join(ports, ",")
 }
 
 func homeSourceFromArgs(args []string) string {

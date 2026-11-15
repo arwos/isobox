@@ -64,6 +64,8 @@ func internetStatus(mode string) string {
 		return "direct"
 	case "proxy":
 		return "proxy"
+	case "egress":
+		return "egress"
 	default:
 		return "unknown"
 	}

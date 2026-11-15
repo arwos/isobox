@@ -12,7 +12,28 @@
 - Podman sing-box fixture покрывает TCP, UDP, auth и отказ relay; runtime может запускаться без sing-box.
 - Plain SOCKS5 показывает явное предупреждение; файл secrets имеет mode `0600`.
 
+### F06-T05 — Режим egress и DNS policy
+
+Реализация подготовлена, но runtime-приёмка F06-T05 ещё не выполнена.
+
+- В режиме `egress` TUN направляет TCP/UDP через built-in policy; проверяются отдельные порты, несколько портов, включительные диапазоны и границы диапазонов, несовпавшие правила блокируются без direct fallback.
+- Статические DNS A-записи отвечаются встроенным resolver; неизвестные имена идут только на явно заданный `network.dns`, иначе получают отказ. Проверить UDP и TCP DNS, несколько A-адресов, нормализацию имени и IPv6 AAAA поведение.
+- Upstream DNS нельзя использовать вне allowlist; разрешение UDP/53 не должно случайно разрешать произвольный TCP egress или наоборот, если протокол задан явно.
+- Host gateway destination достигает host service, слушающий только host loopback, лишь с явным правилом; обычный sandbox `127.0.0.1` остаётся локальным. Проверить доступ к открытому сервису с разрешённым правилом и его блокировку без правила.
+- Проверить, что явный IP не обходит allowlist, незаданное правило блокирует IP literal, host/local адреса требуют явного разрешения, а отказ resolver, TUN policy или dial не создаёт альтернативный маршрут.
+- `proxy` с обязательным `proxy_alias` сохраняет SOCKS5 CONNECT/UDP ASSOCIATE и старый fallback resolver; явно заданные allow rules ограничивают его потоки. `direct` и `off` не меняют поведение.
+- До runtime acceptance проверить profile/config table, IPv4-only инварианты, profile validation и отказ до старта приложения при некорректной policy.
+- Проверить записи для NXDOMAIN/NODATA, отсутствующего/недоступного/запрещённого upstream и заблокированных IP/портов; убедиться в точном app-id пути, append, правах `0600`, обработке symlink/hardlink/чужого владельца и предупреждении stderr при недоступном `/var/log` без ослабления egress.
+- Проверить отказ профиля при порте `0`, диапазоне с началом или концом `0`, перевёрнутом диапазоне и значениях больше `65535`; отсутствие port/port_range должно оставлять любые порты разрешёнными для совпавшего IP/CIDR.
+
 ## Выполнение
+
+### F06-T05 — проверка реализации
+
+- `gofmt -w` для изменённых Go-файлов — успешно.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — exit 0. GVM вывел предупреждение о недоступном stat cache в read-only `/home/user/.gvm/.cache`.
+- Unit tests и runtime acceptance не запускались; сетевое поведение, DNS forwarding, host gateway, policy enforcement и журнал событий остаются непроверенными в runtime.
+- Журнал пишет app-specific события в user-owned файл с режимом `0600`; невозможность открытия сообщает в stderr. Это включено в успешную сборку, но права файла, сообщения и отказ `/var/log` пока не проверялись тестами или runtime.
 
 ### F06-T01 — proxy aliases и credentials
 
@@ -111,3 +132,39 @@
 - Пользовательская runtime-приёмка прошла: `fixture_acceptance=passed`; Go integration checks подтвердили TCP CONNECT, UDP ASSOCIATE, отказ неправильной auth-пары и остановку сервера. Отчёт: `/tmp/isobox-test-results/f06-sing-box.SNry0x/result.txt`.
 
 Runner проверяет TCP CONNECT, UDP ASSOCIATE, неверный пароль и недоступность listener после `podman stop`; тестовые назначения — loopback echo endpoints, внешний Интернет не нужен. Runtime acceptance пройдена на Linux Mint 7 / kernel 6.12.116 / Podman 5.4.2.
+
+### Egress allowlist: port sets
+
+- `port_range` теперь принимает повторяемую позиционную запись `port_range START END;`, например `port_range 8080 8090;`; отражены ограничения `1–65535` и проверка порядка границ.
+- `gofmt -w internal/profile/schema.go internal/profile/decode.go internal/proxy/policy_linux.go internal/cli/config.go` — успешно.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — exit 0; выведено предупреждение GVM о read-only stat cache `/home/user/.gvm/.cache`.
+- `git diff --check` — без замечаний.
+- Go tests и runtime acceptance для новых форматов не запускались.
+
+В последующем обновлении `port_range` изменён с блока на позиционную запись `port_range START END;`; decoder нормализует ровно два значения в диапазон. `gofmt`, `go build ./...` и `git diff --check` прошли; decoder tests и runtime acceptance для этой формы не запускались.
+
+### Egress allowlist: multiple IPs per rule
+
+- Acceptance scenarios: один `ip` scalar остаётся совместимым; повторные `ip` и UNIC-список адресов создают несколько назначений в одном `allow`; каждое назначение подчиняется общим портам и протоколу правила; пустое поле, IPv6 и некорректный CIDR отклоняются.
+- `gofmt -w internal/profile/schema.go internal/profile/decode.go internal/proxy/policy_linux.go internal/cli/config.go` — успешно.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — exit 0; выведено предупреждение GVM о read-only stat cache `/home/user/.gvm/.cache`.
+- `git diff --check` — без замечаний.
+- Сценарии decoder/policy и runtime acceptance не запускались.
+
+### Egress resolver: domain attribute and multiple IPs
+
+- Acceptance scenarios: `record service.example { ... }` декодирует домен из первого block attribute; повторные `ip` и одиночный `ip` дают список A records; отсутствие IP, duplicate IP, IPv6 и более 16 адресов отклоняются; `isobox config` показывает все адреса.
+- `gofmt -w internal/profile/schema.go internal/profile/decode.go internal/proxy/policy_linux.go internal/cli/config.go` — успешно.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — exit 0; выведено предупреждение GVM о read-only stat cache `/home/user/.gvm/.cache`.
+- `git diff --check` — без замечаний.
+- Проверки decoder и resolver data plane для новой формы не запускались.
+
+### Multiple DNS upstreams
+
+- Acceptance scenarios: static records take precedence; unknown names try each configured upstream in order; each destination is independently checked against the port-53 allowlist; if all attempts fail, DNS is refused and logged.
+- Decoder/policy Go tests and DNS runtime acceptance were not run in this change.
+
+### Egress log storage
+
+- Egress журналы перенесены в `~/.isobox/log/<app-id>.log`; каталоги создаются с режимом `0700`, файл открывается с `0600`, `O_NOFOLLOW`, и проверками regular file, owner и hard-link count.
+- `isobox config` показывает новый путь журнала. `go build ./...` и `git diff --check` прошли; Go tests и runtime-проверки для этого изменения не запускались.

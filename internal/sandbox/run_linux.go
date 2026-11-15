@@ -163,7 +163,7 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 	if network != nil && network.activeBackend() == "none" {
 		return 0, fmt.Errorf("network supervisor requires a selected backend")
 	}
-	proxyTUN := network != nil && network.Mode == profile.NetworkModeProxy
+	proxyTUN := network != nil && (network.Mode == profile.NetworkModeProxy || network.Mode == profile.NetworkModeEgress)
 	proxyIngress := proxyTUN && len(rules) != 0
 	lateNetworkNamespace := network != nil && (network.Mode == profile.NetworkModeDirect || proxyTUN || network.Mode == profile.NetworkModeOff && len(rules) != 0)
 	bootstrapTaskSlack := uint64(0)
@@ -335,7 +335,11 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 						applicationPID = networkPID
 						if err == nil {
 							var tunnel *proxy.Tunnel
-							tunnel, err = proxy.StartTUNTunnel(tunFile, network.ProxyAlias, network.ProxyDNSAddress)
+							tunnel, err = proxy.StartTUNTunnelWithPolicy(tunFile, proxy.TUNPolicy{
+								Mode: network.Mode, AppID: commandEnvironment(command.Env, processlist.EnvAppID),
+								ProxyAlias: network.ProxyAlias, DNSAddress: network.ProxyDNSAddress, DNSAddresses: network.ProxyDNSAddresses,
+								Allow: network.ProxyAllowRules, Records: network.ResolverRecords,
+							})
 							if err == nil {
 								var ingress managedNetworkProcess
 								if proxyIngress {

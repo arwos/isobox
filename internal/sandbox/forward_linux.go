@@ -58,7 +58,7 @@ func startPasta(pastaPath string, namespacePID int, rules []profile.PortRule, mo
 		return nil, err
 	}
 	offMode := mode == profile.NetworkModeOff
-	proxyIngress := mode == profile.NetworkModeProxy
+	proxyIngress := mode == profile.NetworkModeProxy || mode == profile.NetworkModeEgress
 	if offMode && !hasTCP && !hasUDP {
 		return nil, fmt.Errorf("at least one TCP or UDP host port must be announced")
 	}

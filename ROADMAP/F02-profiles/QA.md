@@ -25,9 +25,11 @@
 
 Изменение F02-T03:
 
-- Реализованы необязательный `--profile` и создание `$XDG_CONFIG_HOME/isobox/default.unic` с режимом `0600` и сетью `off`; повторное создание использует `O_EXCL`, сохраняя уже существующий файл.
+- Реализованы необязательный `--profile` и создание `~/.isobox/config/default.unic` с режимом `0600` и сетью `off`; повторное создание использует `O_EXCL`, сохраняя уже существующий файл.
 - Проверки F02-T03 пока не запускались; runtime-приёмка не выполнялась.
 - Для F02-T04 добавлены поле `env` и fail-closed валидация; `gofmt`, `go build ./...` и `git diff --check` прошли. GVM сообщил о read-only stat cache, сборка завершилась с кодом 0. Unit и runtime проверки ещё не запускались.
 - Для F02-T05 добавлено профильное поле `path`, fail-closed валидация и расширение `PATH` перед встроенным sandbox списком. `gofmt`, `go build ./...` и `git diff --check` прошли; GVM сообщил о read-only stat cache, сборка завершилась с кодом 0. Unit и runtime проверки не запускались.
 - Для F02-T06 выбор профиля без `--profile` учитывает `<app-id>.unic` рядом с `default.unic`; при отсутствии app-specific файла используется default. `gofmt`, `go build ./...` и `git diff --check` прошли; GVM сообщил о read-only stat cache, сборка завершилась с кодом 0. Unit и runtime проверки выбора профиля не запускались.
 - Для F02-T07 профиль получил argv-массив `command`; команда после `--` заменяет его, иначе используется команда профиля. Отсутствие обеих команд приводит к ошибке до preflight. `gofmt`, `go build ./...` и `git diff --check` прошли; GVM сообщил о read-only stat cache, сборка завершилась с кодом 0. Unit и runtime проверки не запускались.
+
+F02-T08: profile lookup/bootstrap перенесён в `~/.isobox/config/`; каталог и корень `.isobox` проверяются на владельца, тип каталога и режим `0700`, `XDG_CONFIG_HOME` не используется. `gofmt`, `go build ./...` и `git diff --check` выполнены для этого изменения; unit и runtime проверки не запускались.

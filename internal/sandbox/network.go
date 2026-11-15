@@ -26,7 +26,10 @@ type NetworkRuntime struct {
 	ForwarderExecutable string
 	Resolver            []byte
 	ProxyDNSAddress     string
+	ProxyDNSAddresses   []string
 	ProxyAlias          string
+	ProxyAllowRules     []profile.ProxyAllowRule
+	ResolverRecords     []profile.ResolverRecord
 	EnforceEgressFilter bool
 	PastaDNSArgs        []string
 	FallbackReason      string
@@ -50,6 +53,8 @@ func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath s
 		PortForwarder:       selection.PortForwarder,
 		EnforceEgressFilter: selection.EnforceEgressFilter,
 		ProxyAlias:          selection.ProxyAlias,
+		ProxyAllowRules:     append([]profile.ProxyAllowRule(nil), selection.ProxyAllowRules...),
+		ResolverRecords:     append([]profile.ResolverRecord(nil), selection.ResolverRecords...),
 		FallbackReason:      selection.FallbackReason,
 	}
 	backend := runtime.activeBackend()
@@ -61,26 +66,50 @@ func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath s
 	case preflight.BackendSlirp4netns:
 		runtime.Executable = slirpPath
 	case preflight.BackendProxyTUN:
-		if runtime.Mode != profile.NetworkModeProxy {
+		if runtime.Mode != profile.NetworkModeProxy && runtime.Mode != profile.NetworkModeEgress {
 			return NetworkRuntime{}, fmt.Errorf("proxy TUN backend cannot serve network mode %q", runtime.Mode)
 		}
-		if runtime.ProxyAlias == "" {
-			return NetworkRuntime{}, fmt.Errorf("proxy network mode requires a configured proxy alias")
-		}
-		var hostResolver []byte
-		if selection.UseHostDNS || selection.DNSAddress == "" {
-			var readErr error
-			hostResolver, readErr = os.ReadFile("/etc/resolv.conf")
-			if readErr != nil {
-				return NetworkRuntime{}, fmt.Errorf("read host DNS configuration for proxy mode: %w", readErr)
+		if runtime.Mode == profile.NetworkModeProxy {
+			if runtime.ProxyAlias == "" {
+				return NetworkRuntime{}, fmt.Errorf("proxy network mode requires a configured proxy alias")
 			}
+			var hostResolver []byte
+			if selection.UseHostDNS || len(selectedDNSAddresses(selection)) == 0 {
+				var readErr error
+				hostResolver, readErr = os.ReadFile("/etc/resolv.conf")
+				if readErr != nil {
+					return NetworkRuntime{}, fmt.Errorf("read host DNS configuration for proxy mode: %w", readErr)
+				}
+			}
+			resolver, dnsAddresses, err := proxyResolvers(selection, hostResolver)
+			if err != nil {
+				return NetworkRuntime{}, err
+			}
+			runtime.Resolver = resolver
+			runtime.ProxyDNSAddresses = dnsAddresses
+			if len(dnsAddresses) != 0 {
+				runtime.ProxyDNSAddress = dnsAddresses[0]
+			}
+		} else {
+			if runtime.ProxyAlias != "" {
+				return NetworkRuntime{}, fmt.Errorf("egress mode cannot use a remote SOCKS5 alias")
+			}
+			for _, value := range selectedDNSAddresses(selection) {
+				address := net.ParseIP(value)
+				if address == nil || address.To4() == nil || strings.Contains(value, ":") {
+					return NetworkRuntime{}, fmt.Errorf("egress upstream DNS %q is not an IPv4 address", value)
+				}
+				addressText := address.To4().String()
+				if addressText == proxy.TransparentDNSAddress {
+					return NetworkRuntime{}, fmt.Errorf("egress upstream DNS cannot point to the internal resolver endpoint")
+				}
+				runtime.ProxyDNSAddresses = append(runtime.ProxyDNSAddresses, addressText)
+			}
+			if len(runtime.ProxyDNSAddresses) != 0 {
+				runtime.ProxyDNSAddress = runtime.ProxyDNSAddresses[0]
+			}
+			runtime.Resolver = []byte("nameserver " + proxy.TransparentDNSAddress + "\n")
 		}
-		resolver, dnsAddress, err := proxyResolver(selection, hostResolver)
-		if err != nil {
-			return NetworkRuntime{}, err
-		}
-		runtime.Resolver = resolver
-		runtime.ProxyDNSAddress = dnsAddress
 		if selection.PortForwarder == preflight.BackendPasta {
 			runtime.ForwarderExecutable = pastaPath
 			if runtime.ForwarderExecutable == "" {
@@ -133,19 +162,48 @@ func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath s
 }
 
 func proxyResolver(selection preflight.BackendSelection, hostResolver []byte) ([]byte, string, error) {
-	addressText := selection.DNSAddress
-	if selection.UseHostDNS || addressText == "" {
+	resolver, addresses, err := proxyResolvers(selection, hostResolver)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(addresses) == 0 {
+		return resolver, "", nil
+	}
+	return resolver, addresses[0], nil
+}
+
+func proxyResolvers(selection preflight.BackendSelection, hostResolver []byte) ([]byte, []string, error) {
+	addresses := selectedDNSAddresses(selection)
+	if selection.UseHostDNS || len(addresses) == 0 {
 		nameservers := hostIPv4Nameservers(string(hostResolver))
 		if len(nameservers) == 0 {
-			return nil, "", fmt.Errorf("host DNS configuration contains no usable IPv4 nameserver for proxy mode; set profile.network.dns or settings.defaults.dns")
+			return nil, nil, fmt.Errorf("host DNS configuration contains no usable IPv4 nameserver for proxy mode; set profile.network.dns or settings.defaults.dns")
 		}
-		addressText = nameservers[0].String()
+		addresses = []string{nameservers[0].String()}
 	}
-	address := net.ParseIP(addressText)
-	if address == nil || address.To4() == nil || strings.Contains(addressText, ":") {
-		return nil, "", fmt.Errorf("proxy mode DNS server %q is not IPv4; IPv6 is disabled", addressText)
+	validated := make([]string, 0, len(addresses))
+	for _, addressText := range addresses {
+		address := net.ParseIP(addressText)
+		if address == nil || address.To4() == nil || strings.Contains(addressText, ":") {
+			return nil, nil, fmt.Errorf("proxy mode DNS server %q is not IPv4; IPv6 is disabled", addressText)
+		}
+		addressText = address.To4().String()
+		if addressText == proxy.TransparentDNSAddress {
+			return nil, nil, fmt.Errorf("proxy mode DNS server cannot point to the internal resolver endpoint")
+		}
+		validated = append(validated, addressText)
 	}
-	return []byte("nameserver " + proxy.TransparentDNSAddress + "\n"), address.To4().String(), nil
+	return []byte("nameserver " + proxy.TransparentDNSAddress + "\n"), validated, nil
+}
+
+func selectedDNSAddresses(selection preflight.BackendSelection) []string {
+	if len(selection.DNSAddresses) != 0 {
+		return selection.DNSAddresses
+	}
+	if selection.DNSAddress != "" {
+		return []string{selection.DNSAddress}
+	}
+	return nil
 }
 
 func combineResolverConfigs(primary, fallback []byte) []byte {
@@ -199,36 +257,38 @@ func resolverNameservers(config []byte) []string {
 }
 
 func directResolver(selection preflight.BackendSelection, backend preflight.BackendKind) (string, []string, error) {
-	if selection.DNSAddress != "" {
-		address := net.ParseIP(selection.DNSAddress)
-		if address == nil || address.To4() == nil || strings.Contains(selection.DNSAddress, ":") {
-			return "", nil, fmt.Errorf("configured DNS address %q is not IPv4; IPv6 is disabled", selection.DNSAddress)
+	addresses := selectedDNSAddresses(selection)
+	for _, value := range addresses {
+		address := net.ParseIP(value)
+		if address == nil || address.To4() == nil || strings.Contains(value, ":") {
+			return "", nil, fmt.Errorf("configured DNS address %q is not IPv4; IPv6 is disabled", value)
 		}
 	}
 	if backend == preflight.BackendSlirp4netns {
-		address := selection.DNSAddress
-		if selection.UseHostDNS || address == "" {
-			address = "10.0.2.3"
+		if selection.UseHostDNS || len(addresses) == 0 {
+			addresses = []string{"10.0.2.3"}
 		}
-		return "nameserver " + address + "\n", nil, nil
+		return nameserverConfig(addresses), nil, nil
 	}
 	if backend != preflight.BackendPasta {
 		return "", nil, fmt.Errorf("no direct resolver implementation exists for backend %q", backend)
 	}
 
 	var nameservers []net.IP
-	if selection.UseHostDNS || selection.DNSAddress == "" {
+	if selection.UseHostDNS || len(addresses) == 0 {
 		contents, err := os.ReadFile("/etc/resolv.conf")
 		if err != nil {
 			return "", nil, fmt.Errorf("read host DNS configuration: %w", err)
 		}
 		nameservers = hostIPv4Nameservers(string(contents))
 	} else {
-		address := net.ParseIP(selection.DNSAddress)
-		if address == nil || address.To4() == nil || strings.Contains(selection.DNSAddress, ":") {
-			return "", nil, fmt.Errorf("configured DNS address %q is not IPv4; IPv6 is disabled", selection.DNSAddress)
+		for _, value := range addresses {
+			address := net.ParseIP(value)
+			if address == nil || address.To4() == nil || strings.Contains(value, ":") {
+				return "", nil, fmt.Errorf("configured DNS address %q is not IPv4; IPv6 is disabled", value)
+			}
+			nameservers = append(nameservers, address.To4())
 		}
-		nameservers = append(nameservers, address.To4())
 	}
 	if len(nameservers) == 0 {
 		return "", nil, fmt.Errorf("host DNS configuration contains no usable IPv4 nameserver; IPv6 is disabled")
@@ -237,9 +297,14 @@ func directResolver(selection preflight.BackendSelection, backend preflight.Back
 	lines := make([]string, 0, len(nameservers))
 	var pastaArgs []string
 	forwardedLoopback := map[string]bool{}
+	loopbackResolver := ""
 	for _, address := range nameservers {
 		resolverAddress := address.String()
 		if address.IsLoopback() {
+			if loopbackResolver != "" && loopbackResolver != resolverAddress {
+				return "", nil, fmt.Errorf("pasta DNS forwarding supports only one distinct loopback resolver")
+			}
+			loopbackResolver = resolverAddress
 			family := "v4"
 			if !forwardedLoopback[family] {
 				forwardAddress := "169.254.1.1"
@@ -254,6 +319,16 @@ func directResolver(selection preflight.BackendSelection, backend preflight.Back
 		lines = append(lines, "nameserver "+resolverAddress)
 	}
 	return strings.Join(lines, "\n") + "\n", pastaArgs, nil
+}
+
+func nameserverConfig(addresses []string) string {
+	var config strings.Builder
+	for _, address := range addresses {
+		config.WriteString("nameserver ")
+		config.WriteString(address)
+		config.WriteByte('\n')
+	}
+	return config.String()
 }
 
 func hostIPv4Nameservers(contents string) []net.IP {

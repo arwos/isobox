@@ -3,7 +3,8 @@
 - Согласованные режимы: `off`, `direct`, `proxy`.
 - По решению пользователя сеть isobox полностью IPv4-only. Профильные DNS и host bind адреса должны быть IPv4. Перед запуском приложения trusted helper в каждом network namespace выставляет `net.ipv6.conf.default.disable_ipv6=1` и `net.ipv6.conf.all.disable_ipv6=1`, проверяет пустой `/proc/net/if_inet6`, сбрасывает capabilities и оставляет `no_new_privs=1`.
 - В `off` приложение не инициирует сетевые запросы в Интернет, LAN или на хост; входящие от хоста соединения к объявленным портам разрешены вместе с ответами на них.
-- Портовое правило требует host bind address; протокол TCP/UDP задаётся отдельно либо оба при пропуске; разрешены одиночный порт и диапазон.
+- Портовая запись имеет вид `port <IPv4 bind address> <port> [protocol [end_port]];`. Протокол TCP/UDP задаётся третьим значением, по умолчанию используются оба; четвёртое значение задаёт включительный конец диапазона.
+- Profile `network.dns` можно указывать повторно; адреса используются по порядку как DNS upstream-ы. Этот список заменяет одиночный global `settings.defaults.dns`.
 - pasta имеет auto port-forward defaults для TCP/UDP. isobox должен явно отключать автоматическое пробрасывание и перечислять только профильные правила.
 - slirp4netns API host forwarding — IPv4 only. Его запуск не получает `--enable-ipv6`; pasta запускается с `--ipv4-only`. Если backend не может подтвердить IPv4-only конфигурацию, запуск блокируется.
 - `slirp4netns --outbound-addr` означает адрес/интерфейс исходящих сокетов, не URL прокси.

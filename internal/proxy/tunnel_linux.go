@@ -14,10 +14,10 @@ import (
 	"io"
 	"net"
 	"os"
-	"strconv"
 	"sync"
 	"time"
 
+	"github.com/arwos/isobox/internal/profile"
 	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -46,26 +46,32 @@ const (
 // Tunnel owns the IPv4-only user-space stack attached to tunFile. Credentials
 // remain inside the proxy package; callers receive only lifecycle methods.
 type Tunnel struct {
-	tunFile    *os.File
-	stack      *stack.Stack
-	link       *channel.Endpoint
-	client     *socks5Client
-	dnsAddress string
-	ctx        context.Context
-	cancel     context.CancelFunc
-	deviceCtx  context.Context
-	deviceEnd  context.CancelFunc
-	flows      chan struct{}
-	done       chan struct{}
-	readDone   chan struct{}
-	doneOnce   sync.Once
-	closeOnce  sync.Once
-	flowWG     sync.WaitGroup
-	deviceWG   sync.WaitGroup
-	flowMu     sync.Mutex
-	closing    bool
-	mu         sync.RWMutex
-	err        error
+	tunFile      *os.File
+	stack        *stack.Stack
+	link         *channel.Endpoint
+	mode         profile.NetworkMode
+	client       *socks5Client
+	dnsAddress   string
+	dnsAddresses []net.IP
+	allowRules   []compiledAllowRule
+	enforceACL   bool
+	dnsRecords   map[string][]net.IP
+	eventLog     *egressLogger
+	ctx          context.Context
+	cancel       context.CancelFunc
+	deviceCtx    context.Context
+	deviceEnd    context.CancelFunc
+	flows        chan struct{}
+	done         chan struct{}
+	readDone     chan struct{}
+	doneOnce     sync.Once
+	closeOnce    sync.Once
+	flowWG       sync.WaitGroup
+	deviceWG     sync.WaitGroup
+	flowMu       sync.Mutex
+	closing      bool
+	mu           sync.RWMutex
+	err          error
 }
 
 // StartTUNTunnel takes ownership of tunFile on both success and failure.
@@ -73,31 +79,102 @@ type Tunnel struct {
 // It verifies TCP authentication and SOCKS5 UDP ASSOCIATE before returning,
 // so the sandbox startup gate can stay closed when the proxy is unavailable.
 func StartTUNTunnel(tunFile *os.File, alias, dnsAddress string) (*Tunnel, error) {
+	return StartTUNTunnelWithPolicy(tunFile, TUNPolicy{
+		Mode:       profile.NetworkModeProxy,
+		ProxyAlias: alias,
+		DNSAddress: dnsAddress,
+	})
+}
+
+// StartTUNTunnelWithPolicy creates the IPv4-only transparent network path for
+// external SOCKS5 or built-in egress mode. It takes ownership of tunFile on
+// both success and failure.
+func StartTUNTunnelWithPolicy(tunFile *os.File, policy TUNPolicy) (*Tunnel, error) {
 	if tunFile == nil {
 		return nil, fmt.Errorf("proxy TUN descriptor is required")
 	}
-	parsedDNS := net.ParseIP(dnsAddress)
-	if parsedDNS == nil || parsedDNS.To4() == nil {
+	if policy.Mode != profile.NetworkModeProxy && policy.Mode != profile.NetworkModeEgress {
+		_ = tunFile.Close()
+		return nil, fmt.Errorf("TUN policy does not support network mode %q", policy.Mode)
+	}
+	if policy.Mode == profile.NetworkModeProxy && policy.ProxyAlias == "" {
+		_ = tunFile.Close()
+		return nil, fmt.Errorf("proxy network mode requires a SOCKS5 alias")
+	}
+	if policy.Mode == profile.NetworkModeEgress && policy.ProxyAlias != "" {
+		_ = tunFile.Close()
+		return nil, fmt.Errorf("egress network mode cannot use a SOCKS5 alias")
+	}
+	dnsAddressValues := append([]string(nil), policy.DNSAddresses...)
+	if len(dnsAddressValues) == 0 && policy.DNSAddress != "" {
+		dnsAddressValues = []string{policy.DNSAddress}
+	}
+	parsedDNSAddresses := make([]net.IP, 0, len(dnsAddressValues))
+	for _, value := range dnsAddressValues {
+		parsedDNS := net.ParseIP(value)
+		if parsedDNS == nil || parsedDNS.To4() == nil {
+			_ = tunFile.Close()
+			return nil, fmt.Errorf("proxy DNS destination must be an IPv4 address")
+		}
+		dnsAddress := parsedDNS.To4().String()
+		if dnsAddress == TransparentDNSAddress {
+			_ = tunFile.Close()
+			return nil, fmt.Errorf("upstream DNS cannot point to the internal resolver endpoint")
+		}
+		parsedDNSAddresses = append(parsedDNSAddresses, parsedDNS.To4())
+	}
+	if policy.Mode == profile.NetworkModeProxy && len(parsedDNSAddresses) == 0 {
 		_ = tunFile.Close()
 		return nil, fmt.Errorf("proxy DNS destination must be an IPv4 address")
 	}
-	config, err := loadRuntimeConfig(alias)
+	allowRules, err := compileAllowRules(policy.Allow)
 	if err != nil {
 		_ = tunFile.Close()
 		return nil, err
 	}
-	client, err := newSOCKS5Client(config)
+	dnsRecords, err := compileDNSRecords(policy.Records)
 	if err != nil {
 		_ = tunFile.Close()
 		return nil, err
+	}
+	var eventLog *egressLogger
+	if policy.Mode == profile.NetworkModeEgress {
+		eventLog, err = openEgressLogger(policy.AppID)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "isobox: egress event logging unavailable: %v; provide a writable user-owned log file under /var/log to enable it\n", err)
+		}
+	}
+	var client *socks5Client
+	if policy.Mode == profile.NetworkModeProxy {
+		config, err := loadRuntimeConfig(policy.ProxyAlias)
+		if err != nil {
+			_ = tunFile.Close()
+			return nil, err
+		}
+		client, err = newSOCKS5Client(config)
+		if err != nil {
+			_ = tunFile.Close()
+			return nil, err
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	deviceCtx, deviceEnd := context.WithCancel(context.Background())
 	tunnel := &Tunnel{
-		tunFile:    tunFile,
-		client:     client,
-		dnsAddress: parsedDNS.To4().String(),
+		tunFile:      tunFile,
+		mode:         policy.Mode,
+		client:       client,
+		dnsAddresses: parsedDNSAddresses,
+		dnsAddress: func() string {
+			if len(parsedDNSAddresses) != 0 {
+				return parsedDNSAddresses[0].String()
+			}
+			return ""
+		}(),
+		allowRules: allowRules,
+		enforceACL: policy.Mode == profile.NetworkModeEgress || len(allowRules) != 0,
+		dnsRecords: dnsRecords,
+		eventLog:   eventLog,
 		ctx:        ctx,
 		cancel:     cancel,
 		deviceCtx:  deviceCtx,
@@ -110,11 +187,14 @@ func StartTUNTunnel(tunFile *os.File, alias, dnsAddress string) (*Tunnel, error)
 		cancel()
 		deviceEnd()
 		_ = tunFile.Close()
+		_ = eventLog.close()
 		return nil, err
 	}
-	if err := tunnel.probeProxy(); err != nil {
-		_ = tunnel.Close()
-		return nil, err
+	if tunnel.client != nil {
+		if err := tunnel.probeProxy(); err != nil {
+			_ = tunnel.Close()
+			return nil, err
+		}
 	}
 	if err := tunnel.Err(); err != nil {
 		_ = tunnel.Close()
@@ -170,6 +250,9 @@ func (tunnel *Tunnel) Close() error {
 			closeErr = tunnel.tunFile.Close()
 		}
 		tunnel.flowWG.Wait()
+		if err := tunnel.eventLog.close(); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "isobox: close egress event log: %v\n", err)
+		}
 		tunnel.doneOnce.Do(func() { close(tunnel.done) })
 	})
 	return closeErr
@@ -248,7 +331,12 @@ func (tunnel *Tunnel) handleTCP(request *tcp.ForwarderRequest) {
 		return
 	}
 	connectionID := request.ID()
-	destination, err := tunnel.destination(connectionID.LocalAddress, connectionID.LocalPort)
+	isDNS := net.IP(connectionID.LocalAddress.AsSlice()).To4().Equal(net.ParseIP(TransparentDNSAddress).To4()) && connectionID.LocalPort == 53
+	var destination string
+	var err error
+	if !isDNS {
+		destination, err = tunnel.destination(net.IP(connectionID.LocalAddress.AsSlice()), connectionID.LocalPort, profile.PortProtocolTCP)
+	}
 	if err != nil {
 		tunnel.releaseFlow()
 		request.Complete(true)
@@ -265,8 +353,12 @@ func (tunnel *Tunnel) handleTCP(request *tcp.ForwarderRequest) {
 	local := gonet.NewTCPConn(&queue, endpoint)
 	go func() {
 		defer tunnel.releaseFlow()
+		if isDNS {
+			tunnel.serveDNSTCP(local)
+			return
+		}
 		ctx, cancel := context.WithTimeout(tunnel.ctx, tunnelConnectTimeout)
-		remote, err := tunnel.client.DialContext(ctx, "tcp4", destination)
+		remote, err := tunnel.dialContext(ctx, "tcp4", destination)
 		cancel()
 		if err != nil {
 			_ = local.Close()
@@ -281,7 +373,12 @@ func (tunnel *Tunnel) handleUDP(request *udp.ForwarderRequest) bool {
 		return false
 	}
 	connectionID := request.ID()
-	destination, err := tunnel.destination(connectionID.LocalAddress, connectionID.LocalPort)
+	isDNS := net.IP(connectionID.LocalAddress.AsSlice()).To4().Equal(net.ParseIP(TransparentDNSAddress).To4()) && connectionID.LocalPort == 53
+	var destination string
+	var err error
+	if !isDNS {
+		destination, err = tunnel.destination(net.IP(connectionID.LocalAddress.AsSlice()), connectionID.LocalPort, profile.PortProtocolUDP)
+	}
 	if err != nil {
 		tunnel.releaseFlow()
 		return false
@@ -295,6 +392,10 @@ func (tunnel *Tunnel) handleUDP(request *udp.ForwarderRequest) bool {
 	local := gonet.NewUDPConn(&queue, endpoint)
 	go func() {
 		defer tunnel.releaseFlow()
+		if isDNS {
+			tunnel.serveDNSUDP(local)
+			return
+		}
 		tunnel.bridgeUDP(local, destination)
 	}()
 	return true
@@ -331,6 +432,59 @@ func (tunnel *Tunnel) bridgeUDP(local *gonet.UDPConn, destination string) {
 	ctx, cancel := context.WithCancel(tunnel.ctx)
 	defer cancel()
 	defer func() { _ = local.Close() }()
+	if tunnel.client == nil {
+		remote, err := tunnel.dialContext(ctx, "udp4", destination)
+		if err != nil {
+			return
+		}
+		defer func() { _ = remote.Close() }()
+		closeLocalOnStop := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = local.Close()
+			case <-closeLocalOnStop:
+			}
+		}()
+		results := make(chan error, 2)
+		go func() {
+			buffer := make([]byte, tunnelUDPBufferLength)
+			for {
+				n, err := local.Read(buffer)
+				if err != nil {
+					results <- err
+					return
+				}
+				_ = remote.SetDeadline(time.Now().Add(tunnelUDPIdleTimeout))
+				if _, err := remote.Write(buffer[:n]); err != nil {
+					results <- err
+					return
+				}
+			}
+		}()
+		go func() {
+			buffer := make([]byte, tunnelUDPBufferLength)
+			for {
+				_ = remote.SetDeadline(time.Now().Add(tunnelUDPIdleTimeout))
+				n, err := remote.Read(buffer)
+				if err != nil {
+					results <- err
+					return
+				}
+				if _, err := local.Write(buffer[:n]); err != nil {
+					results <- err
+					return
+				}
+			}
+		}()
+		<-results
+		cancel()
+		_ = local.Close()
+		_ = remote.Close()
+		<-results
+		close(closeLocalOnStop)
+		return
+	}
 	association, err := tunnel.client.UDPAssociate(ctx)
 	if err != nil {
 		return
@@ -343,6 +497,7 @@ func (tunnel *Tunnel) bridgeUDP(local *gonet.UDPConn, destination string) {
 		case <-association.Done():
 			_ = local.Close()
 		case <-ctx.Done():
+			_ = local.Close()
 		}
 		close(closeLocalOnStop)
 	}()
@@ -540,25 +695,4 @@ func (tunnel *Tunnel) fail(err error) {
 	}
 	tunnel.mu.Unlock()
 	tunnel.doneOnce.Do(func() { close(tunnel.done) })
-}
-
-func ipv4Destination(address tcpip.Address, port uint16) (string, error) {
-	if address.Len() != header.IPv4AddressSize || port == 0 {
-		return "", fmt.Errorf("TUN destination must be IPv4 with a nonzero port")
-	}
-	host := net.IP(address.AsSlice()).String()
-	if ip := net.ParseIP(host); ip == nil || ip.To4() == nil {
-		return "", fmt.Errorf("TUN destination is not IPv4")
-	}
-	return net.JoinHostPort(host, strconv.Itoa(int(port))), nil
-}
-
-func (tunnel *Tunnel) destination(address tcpip.Address, port uint16) (string, error) {
-	if tunnel != nil && address.String() == TransparentDNSAddress && port == 53 {
-		if ip := net.ParseIP(tunnel.dnsAddress); ip == nil || ip.To4() == nil {
-			return "", fmt.Errorf("proxy DNS destination is not IPv4")
-		}
-		return net.JoinHostPort(tunnel.dnsAddress, "53"), nil
-	}
-	return ipv4Destination(address, port)
 }
