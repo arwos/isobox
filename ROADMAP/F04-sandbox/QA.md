@@ -13,6 +13,9 @@
 - Проверить отсутствие полного D-Bus и подключённых GUI sockets/devices по умолчанию; explicit desktop grant подключает только session bus socket, не system bus.
 - Проверить, что isobox не вызывает portal API; при explicit session-bus grant портал может быть доступен приложению как обычный session-bus service.
 - Проверить аргументы, exit status, сигнализацию и cleanup после завершения приложения.
+- Проверить bwrap hostname `isobox-<app-id>`, hostname `isobox` без app-id и предел длины для app-id максимальной длины.
+- Проверить, что rootless preflight подтверждает `--unshare-cgroup`, а cgroup лимиты по-прежнему видны host supervisor до открытия app gate.
+- Проверить, что `getcwd()` и `PWD` приложения равны `/home/isobox`.
 
 ## Выполнение
 
@@ -59,3 +62,11 @@
 - Base root/lifecycle и profile mounts/HOME прошли на целевом пользовательском хосте по отчётам выше; в текущей локальной среде эти runtime runners не запускались.
 - Полная F04-T03 GUI-приёмка подтверждена отчётом `4bDuLc`; synthetic echo services подтверждают доступ и передачу данных по Unix sockets, но не эмулируют протоколы Wayland/X11/audio/D-Bus.
 - Synthetic echo services подтверждают доступ и передачу данных по Unix sockets, но не эмулируют протоколы Wayland/X11/audio/D-Bus.
+
+F04-T04: hostname добавлен в argv bubblewrap; `gofmt`, `go build ./...` и `git diff --check` прошли. GVM выдал предупреждение о read-only stat cache, сборка завершилась с кодом 0. Unit/runtime проверки hostname не запускались.
+
+F04-T05: `--unshare-cgroup` добавлен в bwrap argv и rootless preflight probe. `gofmt`, `go build ./...` и `git diff --check` прошли; GVM вывел предупреждение о read-only stat cache, сборка завершилась с кодом 0. Rootless preflight probe и runtime-проверки ещё не запускались.
+
+F04-T06: bwrap устанавливает cwd и `PWD` в `/home/isobox`; acceptance probe обновлён. `gofmt`, `go build ./...` и `git diff --check` прошли; Go сообщил о read-only GVM stat cache, сборка завершилась с кодом 0. Runtime-приёмка не запускалась.
+
+F04-T07: host passwd/group mounts заменены минимальными read-only account files; эффективные UID/GID сохраняются, пользователь назван `isobox`, HOME в passwd — `/home/isobox`. `gofmt`, `go build ./...` и `git diff --check` прошли; Go сообщил о read-only GVM stat cache, сборка завершилась с кодом 0. Runtime-приёмка не запускалась.

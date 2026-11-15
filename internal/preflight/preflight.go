@@ -262,6 +262,7 @@ func checkBubblewrap(path string) error {
 	defer cancelProbe()
 	output, err = exec.CommandContext(probeCtx, path,
 		"--unshare-user",
+		"--unshare-cgroup",
 		"--unshare-net",
 		"--ro-bind", string(filepath.Separator), string(filepath.Separator),
 		"--clearenv",

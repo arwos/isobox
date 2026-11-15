@@ -33,4 +33,6 @@ ci: pre-commit
 deb:
 	deb-builder build  --base-dir=build --tmp-dir=/tmp/isobox
 
-
+.PHONY: local-install
+local-install:
+	go install ./cmd/isobox

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/arwos/isobox/internal/limits"
+	"github.com/arwos/isobox/internal/processlist"
 	"github.com/arwos/isobox/internal/profile"
 	"github.com/arwos/isobox/internal/proxy"
 )
@@ -146,6 +147,12 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 	if command == nil {
 		return 0, fmt.Errorf("bwrap command is required")
 	}
+	var unregisterProcess func()
+	defer func() {
+		if unregisterProcess != nil {
+			unregisterProcess()
+		}
+	}()
 	if network != nil && network.FallbackReason != "" {
 		writer := command.Stderr
 		if writer == nil {
@@ -305,6 +312,20 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 			}
 			if status.ChildPID > 0 {
 				childPID = status.ChildPID
+				if unregisterProcess == nil {
+					appID, cwd, mode := commandEnvironment(command.Env, processlist.EnvAppID), commandEnvironment(command.Env, processlist.EnvCWD), commandEnvironment(command.Env, processlist.EnvNetwork)
+					if cwd != "" && mode != "" {
+						var registrationErr error
+						unregisterProcess, registrationErr = processlist.Register(childPID, appID, cwd, mode)
+						if registrationErr != nil {
+							writer := command.Stderr
+							if writer == nil {
+								writer = os.Stderr
+							}
+							_, _ = fmt.Fprintf(writer, "isobox: process will not appear in 'isobox ps': %v\n", registrationErr)
+						}
+					}
+				}
 				applicationPID := childPID
 				if network != nil && forwarder == nil {
 					networkPID := childPID
@@ -449,6 +470,16 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 			return processExitCode(waitErr)
 		}
 	}
+}
+
+func commandEnvironment(environment []string, name string) string {
+	prefix := name + "="
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
 }
 
 func networkNamespaceInode(path string) (uint64, error) {

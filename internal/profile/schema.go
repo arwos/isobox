@@ -28,15 +28,16 @@ const (
 )
 
 // Profile describes sandbox permissions and defaults for an application.
-// It intentionally contains no application command; callers provide that to
-// `isobox run`.
 type Profile struct {
-	Version  int            `unic:"version,default=1"`
-	HomePath string         `unic:"home_path,omitempty"`
-	Mounts   []Mount        `unic:"mount,omitempty"`
-	Network  NetworkConfig  `unic:"network"`
-	GUI      GUIAccess      `unic:"gui"`
-	Limits   ResourceLimits `unic:"limits"`
+	Version  int               `unic:"version,default=1"`
+	HomePath string            `unic:"home_path,omitempty"`
+	Env      map[string]string `unic:"env,omitempty"`
+	Path     []string          `unic:"path,omitempty"`
+	Command  []string          `unic:"command,omitempty"`
+	Mounts   []Mount           `unic:"mount,omitempty"`
+	Network  NetworkConfig     `unic:"network"`
+	GUI      GUIAccess         `unic:"gui"`
+	Limits   ResourceLimits    `unic:"limits"`
 }
 
 // Mount grants access to one host path at one path inside the sandbox.

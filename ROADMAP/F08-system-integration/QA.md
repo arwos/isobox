@@ -6,6 +6,7 @@
 - Установленный launcher валиден, передаёт профиль, app-id и argv, а его удаление не затрагивает профиль/HOME.
 - Выбирается первый существующий системный XDG settings файл; пользовательские overrides применяются по полям и перекрывают системные defaults.
 - Install/update/remove работают только с пользовательскими файлами и не требуют root.
+- Systemd install требует profile command, пишет unit с корректным profile path/app-id и не включает/не запускает его; enable/disable переключают автозапуск без изменения текущего состояния; remove останавливает/отключает и удаляет только управляемый unit.
 
 ## Выполнено
 
@@ -24,3 +25,14 @@
 - Предыдущий вызов `gio launch` в ограниченной оболочке не имел доступа к дисплею (`Cannot open display`). Повторная проверка из активной X11-сессии прошла; этот отказ был ограничением оболочки.
 
 Подробная повторяемая инструкция — `ROADMAP/F08-system-integration/source/README.md`.
+
+После F02-T03 проверки XDG system/user settings выше относятся только к
+предыдущему поведению и больше не являются критерием текущей реализации.
+Acceptance harness обновлён для проверки первого создания `default.unic`;
+после этого изменения harness и runtime acceptance ещё не запускались.
+
+F08-T02: добавлены команды install/enable/disable/remove для systemd user unit. Enable/disable переключают автозапуск в `default.target` без `--now`; remove останавливает и отключает unit. Установка проверяет profile command, пишет только управляемый unit с безопасным quoting `ExecStart` и вызывает `daemon-reload`. Runtime-проверки пользовательского systemd manager не запускались.
+
+Для добавления enable/disable выполнены `gofmt` для изменённых Go-файлов, `go build ./...` (код возврата 0; GVM вывел предупреждение о read-only stat cache) и `git diff --check` — успешно. Runtime-проверка команд через пользовательский systemd manager не выполнялась.
+
+Для переноса desktop-команд под `integration desktop` выполнены `gofmt`, `go build ./...` (код возврата 0; то же предупреждение GVM) и `git diff --check` — успешно. Runtime launcher acceptance в этом изменении не запускалась.

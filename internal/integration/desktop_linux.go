@@ -16,6 +16,7 @@ import (
 )
 
 const managedLauncherMarker = "X-Isobox-Managed=true"
+const maxLauncherFileSize = 1 << 20
 
 // InstallLauncher creates or updates an isobox-managed launcher in the user's
 // XDG applications directory. Files not owned by isobox are never replaced.
@@ -127,7 +128,7 @@ func verifyManagedLauncher(path string, allowMissing bool) error {
 	if err != nil {
 		return fmt.Errorf("read launcher %q: %w", path, err)
 	}
-	data, readErr := io.ReadAll(io.LimitReader(file, maxSettingsFileSize+1))
+	data, readErr := io.ReadAll(io.LimitReader(file, maxLauncherFileSize+1))
 	closeErr := file.Close()
 	if readErr != nil {
 		return fmt.Errorf("read launcher %q: %w", path, readErr)
@@ -135,7 +136,7 @@ func verifyManagedLauncher(path string, allowMissing bool) error {
 	if closeErr != nil {
 		return fmt.Errorf("close launcher %q: %w", path, closeErr)
 	}
-	if len(data) > maxSettingsFileSize {
+	if len(data) > maxLauncherFileSize {
 		return fmt.Errorf("refusing to replace or remove %q: launcher file is too large to verify", path)
 	}
 	for _, line := range strings.Split(string(data), "\n") {

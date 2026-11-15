@@ -93,6 +93,26 @@ func ValidateProfile(profile Profile) error {
 	if profile.Version != SchemaVersion {
 		return fmt.Errorf("profile.version: unsupported version %d; use %d", profile.Version, SchemaVersion)
 	}
+	if err := validateEnvironment(profile.Env); err != nil {
+		return err
+	}
+	if len(profile.Command) > 0 && profile.Command[0] == "" {
+		return fmt.Errorf("profile.command[0]: executable cannot be empty")
+	}
+	for index, argument := range profile.Command {
+		if strings.ContainsRune(argument, '\x00') {
+			return fmt.Errorf("profile.command[%d]: argument contains a NUL byte", index)
+		}
+	}
+	for index, entry := range profile.Path {
+		field := fmt.Sprintf("profile.path[%d]", index)
+		if err := validateAbsolutePath(field, entry); err != nil {
+			return err
+		}
+		if strings.ContainsRune(entry, ':') {
+			return fmt.Errorf("%s: path entry cannot contain ':'", field)
+		}
+	}
 	if profile.HomePath != "" {
 		if err := validateAbsolutePath("profile.home_path", profile.HomePath); err != nil {
 			return err
@@ -142,6 +162,31 @@ func ValidateProfile(profile Profile) error {
 	}
 	if err := validatePortRules(profile.Network.Ports); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateEnvironment(environment map[string]string) error {
+	for name, value := range environment {
+		if name == "" {
+			return fmt.Errorf("profile.env: variable name cannot be empty")
+		}
+		for index, character := range name {
+			valid := character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' || character == '_'
+			if index > 0 {
+				valid = valid || character >= '0' && character <= '9'
+			}
+			if !valid {
+				return fmt.Errorf("profile.env.%s: invalid environment variable name", name)
+			}
+		}
+		switch name {
+		case "HOME", "PATH", "PWD", "TMPDIR", "GOMAXPROCS":
+			return fmt.Errorf("profile.env.%s: reserved by isobox; remove it", name)
+		}
+		if strings.ContainsRune(value, '\x00') {
+			return fmt.Errorf("profile.env.%s: value contains a NUL byte", name)
+		}
 	}
 	return nil
 }

@@ -15,14 +15,35 @@ import (
 )
 
 const integrationUsage = `Usage:
-  isobox integration install --id=ID --name=NAME --profile=PATH --app-id=ID [--icon=ICON] [--terminal] -- APP [ARGS...]
-  isobox integration remove --id=ID
+  isobox integration desktop install --id=ID --name=NAME --profile=PATH --app-id=ID [--icon=ICON] [--terminal] -- APP [ARGS...]
+  isobox integration desktop remove --id=ID
+  isobox integration systemd install --profile=PATH --app-id=ID
+  isobox integration systemd enable --app-id=ID
+  isobox integration systemd disable --app-id=ID
+  isobox integration systemd remove --app-id=ID
 
-Install creates or updates a launcher in the user's XDG applications directory.
-Remove deletes only a launcher previously created by isobox.
+Desktop install creates or updates a launcher in the user's XDG applications directory.
+Systemd install creates a user service; the command must be configured in the profile.
+Enable/disable toggle autostart without starting or stopping a running service.
 `
 
 func executeIntegration(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		_, _ = io.WriteString(stdout, integrationUsage)
+		return 0
+	}
+	switch args[0] {
+	case "desktop":
+		return executeDesktopIntegration(args[1:], stdout, stderr)
+	case "systemd":
+		return executeSystemdIntegration(args[1:], stdout, stderr)
+	default:
+		_, _ = fmt.Fprintf(stderr, "isobox integration: unknown action %q\n\n%s", args[0], integrationUsage)
+		return 2
+	}
+}
+
+func executeDesktopIntegration(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		_, _ = io.WriteString(stdout, integrationUsage)
 		return 0
@@ -33,7 +54,7 @@ func executeIntegration(args []string, stdout, stderr io.Writer) int {
 	case "remove":
 		return executeRemoveLauncher(args[1:], stdout, stderr)
 	default:
-		_, _ = fmt.Fprintf(stderr, "isobox integration: unknown action %q\n\n%s", args[0], integrationUsage)
+		_, _ = fmt.Fprintf(stderr, "isobox integration desktop: unknown action %q\n\n%s", args[0], integrationUsage)
 		return 2
 	}
 }
@@ -45,12 +66,12 @@ func executeInstallLauncher(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "isobox integration install: %v\n\n%s", err, integrationUsage)
+		_, _ = fmt.Fprintf(stderr, "isobox integration desktop install: %v\n\n%s", err, integrationUsage)
 		return 2
 	}
 	path, err := integration.InstallLauncher(options)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "isobox integration install: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "isobox integration desktop install: %v\n", err)
 		return 1
 	}
 	_, _ = fmt.Fprintf(stdout, "Installed launcher: %s\n", path)
@@ -69,7 +90,7 @@ func parseLauncherInstallArgs(args []string) (integration.LauncherOptions, error
 		return integration.LauncherOptions{}, fmt.Errorf("missing -- before the application command")
 	}
 
-	flags := flag.NewFlagSet("isobox integration install", flag.ContinueOnError)
+	flags := flag.NewFlagSet("isobox integration desktop install", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	var options integration.LauncherOptions
 	flags.StringVar(&options.ID, "id", "", "stable launcher file identity")
@@ -95,21 +116,21 @@ func parseLauncherInstallArgs(args []string) (integration.LauncherOptions, error
 }
 
 func executeRemoveLauncher(args []string, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet("isobox integration remove", flag.ContinueOnError)
+	flags := flag.NewFlagSet("isobox integration desktop remove", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	var id string
 	flags.StringVar(&id, "id", "", "stable launcher file identity")
 	if err := flags.Parse(args); err != nil {
-		_, _ = fmt.Fprintf(stderr, "isobox integration remove: %v\n\n%s", err, integrationUsage)
+		_, _ = fmt.Fprintf(stderr, "isobox integration desktop remove: %v\n\n%s", err, integrationUsage)
 		return 2
 	}
 	if flags.NArg() != 0 || id == "" {
-		_, _ = fmt.Fprintf(stderr, "isobox integration remove: --id is required and positional arguments are not accepted\n\n%s", integrationUsage)
+		_, _ = fmt.Fprintf(stderr, "isobox integration desktop remove: --id is required and positional arguments are not accepted\n\n%s", integrationUsage)
 		return 2
 	}
 	path, err := integration.RemoveLauncher(id)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "isobox integration remove: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "isobox integration desktop remove: %v\n", err)
 		return 1
 	}
 	_, _ = fmt.Fprintf(stdout, "Removed launcher: %s\n", path)

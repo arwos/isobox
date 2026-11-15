@@ -113,6 +113,20 @@ func prepareLauncher(options LauncherOptions) ([]byte, error) {
 	return []byte(entry.String()), nil
 }
 
+func userDataHome() (string, error) {
+	if directory := os.Getenv("XDG_DATA_HOME"); filepath.IsAbs(directory) {
+		return filepath.Clean(directory), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine the user's home directory for desktop integration: %w", err)
+	}
+	if home == "" {
+		return "", fmt.Errorf("cannot determine the user's home directory for desktop integration")
+	}
+	return filepath.Join(home, ".local", "share"), nil
+}
+
 func resolveRegularFile(path, field string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("%s path is required", field)

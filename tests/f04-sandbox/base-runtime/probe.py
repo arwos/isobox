@@ -36,8 +36,8 @@ def require_tmpfs_mount(target):
     raise RuntimeError(f"{target} is not an independent mount")
 
 
-require(os.getcwd() == "/", "sandbox working directory is not /")
-require(os.environ.get("PWD") == "/", "PWD is not /")
+require(os.getcwd() == "/home/isobox", "sandbox working directory is not /home/isobox")
+require(os.environ.get("PWD") == "/home/isobox", "PWD is not /home/isobox")
 require(os.environ.get("HOME") == "/home/isobox", "HOME is not /home/isobox")
 require(os.environ.get("TMPDIR") == "/tmp", "TMPDIR is not /tmp")
 require("ISOBOX_T01_HOST_SECRET" not in os.environ, "host environment was not cleared")

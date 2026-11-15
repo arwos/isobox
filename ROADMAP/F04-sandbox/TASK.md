@@ -19,3 +19,15 @@
   - Шаги: отдельные grants для Wayland/X11, audio, GPU и desktop integration; не предоставлять полный D-Bus по умолчанию и не подключать порталы.
   - Приёмка: каждое разрешение можно включить независимо; выключенные socket/device/bus недоступны приложению.
   - Реализация и пользовательская runtime-приёмка завершены. Отчёт `/tmp/isobox-test-results/f04-gui-grants.4bDuLc/result.txt` на `0a567ca` подтверждает default-deny, независимые Wayland/X11/PipeWire/PulseAudio/GPU/session-bus grants, отказ до приложения для некорректных и недоступных разрешений, cleanup synthetic sockets и `runtime_acceptance=passed`.
+- [x] F04-T04 — Задавать hostname sandbox по app-id.
+  - Шаги: передавать в bubblewrap `--hostname isobox-<app-id>` в создаваемом UTS namespace; без app-id использовать `isobox`; ограничивать имя лимитом Linux в 64 байта.
+  - Приёмка: аргументы bwrap содержат hostname для запуска с/без app-id; hostname хоста не меняется.
+- [x] F04-T05 — Изолировать представление cgroup внутри sandbox.
+  - Шаги: создавать cgroup namespace через `--unshare-cgroup`; подтвердить его доступность в rootless bwrap preflight; сохранять применение/проверку лимитов во внешнем host supervisor.
+  - Приёмка: sandbox видит cgroup namespace; cgroup v2 limits проверяются host supervisor до открытия app gate; недоступный namespace блокирует запуск.
+- [x] F04-T06 — Запускать приложение с cwd и PWD в HOME sandbox.
+  - Шаги: устанавливать `--chdir /home/isobox` и `PWD=/home/isobox` для приложения и bootstrap helper-ов.
+  - Приёмка: `getcwd()` и `PWD` приложения равны `/home/isobox`.
+- [x] F04-T07 — Давать sandbox-пользователю имя `isobox`.
+  - Шаги: не подключать host `/etc/passwd` и `/etc/group`; монтировать минимальные read-only account databases, где текущие эффективные UID/GID принадлежат `isobox` с HOME `/home/isobox`.
+  - Приёмка: `id -u`/`id -g` сохраняют числовые IDs хоста; `whoami` возвращает `isobox`; passwd-запись указывает `/home/isobox`; host account entries не видны.

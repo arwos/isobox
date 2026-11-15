@@ -110,17 +110,28 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	}
 	args = append(args,
 		"--unshare-pid",
+		"--unshare-cgroup",
 		"--unshare-ipc",
 		"--unshare-uts",
+		"--hostname", sandboxHostname(appID),
 		"--new-session",
 		"--die-with-parent",
 	)
 	if !offGuard && !ipv4Setup && !proxyNetwork {
 		args = append(args, "--unshare-net")
 	}
+	args = append(args, "--dir", "/etc")
 	for _, mount := range systemMounts {
 		args = append(args, "--ro-bind", mount.source, mount.destination)
 	}
+	accountFD := 3
+	if directNetwork || proxyNetwork {
+		accountFD++ // fd 3 contains the sandbox resolver.
+	}
+	args = append(args,
+		"--ro-bind-data", strconv.Itoa(accountFD), "/etc/passwd",
+		"--ro-bind-data", strconv.Itoa(accountFD+1), "/etc/group",
+	)
 	if directNetwork || proxyNetwork {
 		args = append(args, "--ro-bind-data", "3", "/etc/resolv.conf")
 	}
@@ -146,9 +157,13 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		}
 		args = append(args, option, mount.source, mount.target)
 	}
+	applicationPath := sandboxPath
+	if len(config.Path) > 0 {
+		applicationPath = strings.Join(config.Path, ":") + ":" + sandboxPath
+	}
 	args = append(args,
 		"--clearenv",
-		"--setenv", "PATH", sandboxPath,
+		"--setenv", "PATH", applicationPath,
 		"--setenv", "HOME", sandboxHome,
 		"--setenv", "TMPDIR", "/tmp",
 	)
@@ -159,6 +174,14 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	sort.Strings(environment)
 	for _, name := range environment {
 		args = append(args, "--setenv", name, gui.environment[name])
+	}
+	profileEnvironment := make([]string, 0, len(config.Env))
+	for name := range config.Env {
+		profileEnvironment = append(profileEnvironment, name)
+	}
+	sort.Strings(profileEnvironment)
+	for _, name := range profileEnvironment {
+		args = append(args, "--setenv", name, config.Env[name])
 	}
 	if ipv4Setup || offGuard {
 		// Keep the trusted setup helper's Go runtime within the task budget. The
@@ -229,8 +252,8 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	}
 	args = append(args,
 		"--unsetenv", "PWD",
-		"--chdir", "/",
-		"--setenv", "PWD", "/",
+		"--chdir", sandboxHome,
+		"--setenv", "PWD", sandboxHome,
 		"--json-status-fd", "3",
 		"--",
 	)
@@ -282,7 +305,61 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		}
 		command.ExtraFiles = append(command.ExtraFiles, resolverFile)
 	}
+	passwdFile, err := anonymousDataFile(sandboxPasswdContents(os.Geteuid(), os.Getegid()))
+	if err != nil {
+		closeFiles(command.ExtraFiles)
+		return nil, fmt.Errorf("prepare sandbox passwd database: %w", err)
+	}
+	command.ExtraFiles = append(command.ExtraFiles, passwdFile)
+	groupFile, err := anonymousDataFile(sandboxGroupContents(os.Getegid()))
+	if err != nil {
+		closeFiles(command.ExtraFiles)
+		return nil, fmt.Errorf("prepare sandbox group database: %w", err)
+	}
+	command.ExtraFiles = append(command.ExtraFiles, groupFile)
 	return command, nil
+}
+
+func closeFiles(files []*os.File) {
+	for _, file := range files {
+		_ = file.Close()
+	}
+}
+
+func sandboxPasswdContents(uid, gid int) []byte {
+	entries := []string{
+		fmt.Sprintf("isobox:x:%d:%d:isobox:%s:/bin/sh", uid, gid, sandboxHome),
+	}
+	if uid != 0 {
+		entries = append(entries, "root:x:0:0:root:/root:/bin/sh")
+	}
+	if uid != 65534 {
+		entries = append(entries, "nobody:x:65534:65534:nobody:/nonexistent:/bin/false")
+	}
+	return []byte(strings.Join(entries, "\n") + "\n")
+}
+
+func sandboxGroupContents(gid int) []byte {
+	entries := []string{fmt.Sprintf("isobox:x:%d:", gid)}
+	if gid != 0 {
+		entries = append(entries, "root:x:0:")
+	}
+	if gid != 65534 {
+		entries = append(entries, "nogroup:x:65534:")
+	}
+	return []byte(strings.Join(entries, "\n") + "\n")
+}
+
+func sandboxHostname(appID string) string {
+	const hostnamePrefix = "isobox-"
+	if appID == "" {
+		return "isobox"
+	}
+	maxAppIDLength := 64 - len(hostnamePrefix)
+	if len(appID) > maxAppIDLength {
+		appID = appID[:maxAppIDLength]
+	}
+	return hostnamePrefix + appID
 }
 
 func validateSupportedProfile(config profile.EffectiveProfile, network NetworkRuntime) error {
@@ -423,8 +500,6 @@ func availableSystemMounts() ([]systemMount, error) {
 		{source: "/etc/ld.so.conf.d", destination: "/etc/ld.so.conf.d", directory: true},
 		{source: "/etc/ssl/certs", destination: "/etc/ssl/certs", directory: true},
 		{source: "/etc/pki/tls/certs", destination: "/etc/pki/tls/certs", directory: true},
-		{source: "/etc/passwd", destination: "/etc/passwd"},
-		{source: "/etc/group", destination: "/etc/group"},
 		{source: "/etc/nsswitch.conf", destination: "/etc/nsswitch.conf"},
 		{source: "/etc/ld.so.cache", destination: "/etc/ld.so.cache"},
 		{source: "/etc/ld.so.conf", destination: "/etc/ld.so.conf"},

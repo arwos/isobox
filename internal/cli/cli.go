@@ -16,28 +16,35 @@ import (
 	"github.com/arwos/isobox/internal/integration"
 	"github.com/arwos/isobox/internal/limits"
 	"github.com/arwos/isobox/internal/preflight"
+	"github.com/arwos/isobox/internal/processlist"
 	"github.com/arwos/isobox/internal/profile"
 	"github.com/arwos/isobox/internal/sandbox"
 )
 
 const rootUsage = `Usage:
-  isobox run --profile=PATH [--app-id=ID] -- APP [ARGS...]
+  isobox run [--profile=PATH] [--app-id=ID] [-- APP [ARGS...]]
+  isobox config [--profile=PATH] [--app-id=ID] [-- APP [ARGS...]]
+  isobox ps
 
 Commands:
   run          Prepare an isolated application launch
+  config       Show launch parameters without starting the application
+  ps           List applications running through isobox
   proxy        Manage SOCKS5 proxy aliases
-  integration  Manage optional user desktop launchers
+  integration  Manage optional user desktop launchers and systemd units
   help         Show this help
 `
 
 const runUsage = `Usage:
-  isobox run --profile=PATH [--app-id=ID] -- APP [ARGS...]
+  isobox run [--profile=PATH] [--app-id=ID] [-- APP [ARGS...]]
 
 Options:
-  --profile=PATH  Path to a UNIC profile (required)
-  --app-id=ID     Stable application identity for a managed HOME directory
+  --profile=PATH  Path to a UNIC profile (default: app-id profile or default.unic)
+  --app-id=ID     Stable application identity for profile selection and managed HOME
 
-Everything after -- is passed to the application unchanged.
+Everything after -- is passed to the application unchanged and overrides
+the command configured in the profile. If neither is provided, the command
+must be added to the profile.
 `
 
 // RunOptions contains the parts of a launch request owned by isobox and the
@@ -61,6 +68,10 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "run":
 		return executeRun(args[1:], stdout, stderr)
+	case "config":
+		return executeConfig(args[1:], stdout, stderr)
+	case "ps":
+		return executePS(args[1:], stdout, stderr)
 	case "proxy":
 		return executeProxy(args[1:], stdout, stderr)
 	case "integration":
@@ -81,6 +92,13 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "isobox run: %v\n\n%s", err, runUsage)
 		return 2
 	}
+	if options.ProfilePath == "" {
+		options.ProfilePath, err = integration.EnsureProfileForApp(options.AppID)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "isobox run: cannot select profile: %v\n", err)
+			return 2
+		}
+	}
 	profileData, err := os.ReadFile(options.ProfilePath)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "isobox run: cannot read profile %q: %v\n", options.ProfilePath, err)
@@ -91,12 +109,12 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
 	}
-	settings, err := integration.LoadSettings()
+	options.Command, err = selectApplicationCommand(options.Command, appProfile.Command)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "isobox run: cannot load settings: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
 	}
-	effectiveProfile, err := profile.ResolveProfile(appProfile, settings)
+	effectiveProfile, err := profile.ResolveProfile(appProfile, profile.DefaultSettings())
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
@@ -125,6 +143,10 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 	command.Stdin = os.Stdin
 	command.Stdout = stdout
 	command.Stderr = stderr
+	workingDirectory, _ := os.Getwd()
+	command.Env = setEnvironmentValue(os.Environ(), processlist.EnvAppID, options.AppID)
+	command.Env = setEnvironmentValue(command.Env, processlist.EnvCWD, workingDirectory)
+	command.Env = setEnvironmentValue(command.Env, processlist.EnvNetwork, string(effectiveProfile.NetworkMode))
 
 	var exitCode int
 	if network.Backend != preflight.BackendNone || network.PortForwarder != preflight.BackendNone {
@@ -139,6 +161,17 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 		return 125
 	}
 	return exitCode
+}
+
+func setEnvironmentValue(environment []string, name, value string) []string {
+	prefix := name + "="
+	filtered := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		if !strings.HasPrefix(entry, prefix) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return append(filtered, prefix+value)
 }
 
 func parseRunArgs(args []string) (RunOptions, error) {
@@ -168,21 +201,23 @@ func parseRunArgs(args []string) (RunOptions, error) {
 	if flags.NArg() > 0 {
 		return RunOptions{}, fmt.Errorf("application command must follow --")
 	}
-	if separator < 0 {
-		return RunOptions{}, fmt.Errorf("missing -- before the application command")
-	}
-	if options.ProfilePath == "" {
-		return RunOptions{}, fmt.Errorf("--profile is required")
-	}
-	if len(command) == 0 || command[0] == "" {
-		return RunOptions{}, fmt.Errorf("application command is required after --")
-	}
 	if appIDWasSet(flagArgs) && !validAppID(options.AppID) {
 		return RunOptions{}, fmt.Errorf("--app-id must start with an ASCII letter or digit and contain only letters, digits, '.', '_' or '-' (maximum 64 characters)")
 	}
 
 	options.Command = append([]string(nil), command...)
 	return options, nil
+}
+
+func selectApplicationCommand(requested, configured []string) ([]string, error) {
+	selected := requested
+	if len(selected) == 0 {
+		selected = configured
+	}
+	if len(selected) == 0 || selected[0] == "" {
+		return nil, fmt.Errorf("application command is required: pass it after -- or set profile.command")
+	}
+	return append([]string(nil), selected...), nil
 }
 
 func appIDWasSet(args []string) bool {
