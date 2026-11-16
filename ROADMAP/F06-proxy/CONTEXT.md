@@ -32,6 +32,8 @@
 - Все ошибки конфигурации проверяются до запуска; отсутствие правила, DNS upstream или исправного policy data plane не создаёт прямой обход. Таблица `isobox config` показывает режим, upstream, правила и статические записи.
 - В `egress` журналировать неудачное DNS-разрешение (домен, qtype/transport и причину) и назначения, заблокированные allowlist (IP, порт, протокол и причину), в `~/.isobox/log/<app-id>.log`; пустой app-id использует `default`. Каталог создаётся с режимом `0700`, файл — `0600` и без symlink-follow. Если каталог или файл недоступны, предупредить через stderr и продолжить с закрытой по allowlist сетью; журнал не должен быть условием разрешения egress.
 
+Результаты live acceptance F06-T05: static DNS приоритетен при явно настроенных upstream; заблокированный upstream пропускается, разрешённый работает; пустой allowlist и запрещённые назначения остаются закрытыми. Host loopback доступен по `host.gateway.internal` только после явного IP/port/protocol правила, обычный sandbox loopback изолирован. Успешная проверка выявила, что `net.ParseIP` передаёт IPv4 как 16-байтовый mapped address; `allowed` нормализует его через `To4()` до `netip.AddrFromSlice`. Также исправлена stderr подсказка недоступного журнала: путь теперь указывает на `~/.isobox/log`.
+
 ## F06-T01 — хранилище alias и credentials
 
 - Команды управления: `isobox proxy add --alias=ALIAS --server=HOST:PORT [--auth=none|userpass]`, `isobox proxy list`, `isobox proxy remove --alias=ALIAS`. Credentials не принимаются в аргументах процесса; при `userpass` имя пользователя запрашивается с терминала, пароль вводится с отключённым echo. Прерывание сигнала восстанавливает настройки терминала.

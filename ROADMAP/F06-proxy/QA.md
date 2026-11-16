@@ -14,7 +14,7 @@
 
 ### F06-T05 — Режим egress и DNS policy
 
-Реализация подготовлена, но runtime-приёмка F06-T05 ещё не выполнена.
+Сценарии ниже использовались как критерии live-приёмки; фактически выполненные проверки перечислены в разделе `Выполнение`.
 
 - В режиме `egress` TUN направляет TCP/UDP через built-in policy; проверяются отдельные порты, несколько портов, включительные диапазоны и границы диапазонов, несовпавшие правила блокируются без direct fallback.
 - Статические DNS A-записи отвечаются встроенным resolver; неизвестные имена идут только на явно заданный `network.dns`, иначе получают отказ. Проверить UDP и TCP DNS, несколько A-адресов, нормализацию имени и IPv6 AAAA поведение.
@@ -24,17 +24,19 @@
 - Проверить, что явный IP не обходит allowlist, незаданное правило блокирует IP literal, host/local адреса требуют явного разрешения, а отказ resolver, TUN policy или dial не создаёт альтернативный маршрут.
 - `proxy` с обязательным `proxy_alias` сохраняет SOCKS5 CONNECT/UDP ASSOCIATE и старый fallback resolver; явно заданные allow rules ограничивают его потоки. `direct` и `off` не меняют поведение.
 - До runtime acceptance проверить profile/config table, IPv4-only инварианты, profile validation и отказ до старта приложения при некорректной policy.
-- Проверить записи для NXDOMAIN/NODATA, отсутствующего/недоступного/запрещённого upstream и заблокированных IP/портов; убедиться в точном app-id пути, append, правах `0600`, обработке symlink/hardlink/чужого владельца и предупреждении stderr при недоступном `/var/log` без ослабления egress.
+- Проверить записи для NXDOMAIN/NODATA, отсутствующего/недоступного/запрещённого upstream и заблокированных IP/портов; убедиться в точном app-id пути, append, правах `0600`, обработке symlink/hardlink/чужого владельца и предупреждении stderr при недоступном `~/.isobox/log` без ослабления egress.
 - Проверить отказ профиля при порте `0`, диапазоне с началом или концом `0`, перевёрнутом диапазоне и значениях больше `65535`; отсутствие port/port_range должно оставлять любые порты разрешёнными для совпавшего IP/CIDR.
 
 ## Выполнение
 
 ### F06-T05 — проверка реализации
 
-- `gofmt -w` для изменённых Go-файлов — успешно.
-- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — exit 0. GVM вывел предупреждение о недоступном stat cache в read-only `/home/user/.gvm/.cache`.
-- Unit tests и runtime acceptance не запускались; сетевое поведение, DNS forwarding, host gateway, policy enforcement и журнал событий остаются непроверенными в runtime.
-- Журнал пишет app-specific события в user-owned файл с режимом `0600`; невозможность открытия сообщает в stderr. Это включено в успешную сборку, но права файла, сообщения и отказ `/var/log` пока не проверялись тестами или runtime.
+- `gofmt -w internal/proxy/policy_linux.go internal/proxy/tunnel_linux.go`, `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build -o /tmp/isobox-f05-t03.Bs4UpQ/isobox ./cmd/isobox` и `git diff --check` — прошли. GVM вывел предупреждение о read-only stat cache; сборка завершилась с кодом 0.
+- Rootless live acceptance от обычного UID с временным host TCP/UDP listener прошла: статическая запись `service.example` вернула оба настроенных IPv4 адреса при наличии upstream DNS; неизвестный домен без upstream получил отказ; запрещённые `203.0.113.11:80` и upstream `8.8.8.8:53` не прошли allowlist, после чего разрешённый `1.1.1.1:53` успешно разрешил `example.com`.
+- Явное правило для host loopback разрешило TCP через `host.gateway.internal`; обычный sandbox `127.0.0.1` не достиг host listener. UDP прошёл только по разрешённому включительному диапазону; UDP на TCP-only порт был заблокирован. `/proc/net/if_inet6` оставался пустым.
+- Журнал `~/.isobox/log/f06-t05-accept.log` содержал DNS и egress отказы, имел режим `0600`, каталог — `0700`. При symlink вместо log-каталога isobox предупредил в stderr; профиль без allow правил всё равно блокировал исходящее соединение к TEST-NET адресу.
+- Первый live запуск выявил отказ host gateway при разрешённом loopback правиле: `net.ParseIP("127.0.0.1")` передавал 16-байтовый IPv4-mapped адрес в `netip.AddrFromSlice`, который затем отклонялся как IPv6. `allowed` теперь нормализует адрес через `To4()` перед проверкой. Повторная live-приёмка после исправления прошла.
+- Предыдущая F06-T03 runtime-приёмка с sing-box подтвердила внешний SOCKS5 DNS/TCP/UDP и опубликованный TCP ingress; результат описан выше в разделе F06-T03. В этой итерации Go tests и отдельный TCP upstream DNS probe не запускались.
 
 ### F06-T01 — proxy aliases и credentials
 

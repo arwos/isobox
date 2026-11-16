@@ -156,7 +156,7 @@ func StartTUNTunnelWithPolicy(tunFile *os.File, policy TUNPolicy) (*Tunnel, erro
 	if policy.Mode == profile.NetworkModeEgress {
 		eventLog, err = openEgressLogger(policy.AppID)
 		if err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "isobox: egress event logging unavailable: %v; provide a writable user-owned log file under /var/log to enable it\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "isobox: egress event logging unavailable: %v; check permissions on ~/.isobox/log\n", err)
 		}
 	}
 	var client *socks5Client

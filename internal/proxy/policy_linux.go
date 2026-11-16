@@ -162,7 +162,11 @@ func (tunnel *Tunnel) logBlocked(ip net.IP, port uint16, protocol profile.PortPr
 }
 
 func (tunnel *Tunnel) allowed(ip net.IP, port uint16, protocol profile.PortProtocol) bool {
-	address, ok := netip.AddrFromSlice(ip)
+	ipv4 := ip.To4()
+	if ipv4 == nil {
+		return false
+	}
+	address, ok := netip.AddrFromSlice(ipv4)
 	if !ok || !address.Is4() {
 		return false
 	}
