@@ -10,32 +10,34 @@ import (
 	"testing"
 	"time"
 
-	"gvisor.dev/gvisor/pkg/tcpip"
+	"github.com/arwos/isobox/internal/profile"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 )
 
 func TestIPv4Destination(t *testing.T) {
+	tunnel := &Tunnel{mode: profile.NetworkModeProxy}
 	tests := []struct {
-		name    string
-		address tcpip.Address
-		port    uint16
-		want    string
-		wantErr bool
+		name     string
+		address  net.IP
+		port     uint16
+		protocol profile.PortProtocol
+		want     string
+		wantErr  bool
 	}{
-		{name: "IPv4", address: tcpip.AddrFrom4([4]byte{192, 0, 2, 8}), port: 443, want: "192.0.2.8:443"},
-		{name: "IPv6", address: tcpip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8}), port: 443, wantErr: true},
-		{name: "zero port", address: tcpip.AddrFrom4([4]byte{192, 0, 2, 8}), wantErr: true},
+		{name: "IPv4", address: net.ParseIP("192.0.2.8"), port: 443, protocol: profile.PortProtocolTCP, want: "192.0.2.8:443"},
+		{name: "IPv6", address: net.ParseIP("2001:db8::8"), port: 443, protocol: profile.PortProtocolTCP, wantErr: true},
+		{name: "zero port", address: net.ParseIP("192.0.2.8"), protocol: profile.PortProtocolTCP, wantErr: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := ipv4Destination(test.address, test.port)
+			got, err := tunnel.destination(test.address, test.port, test.protocol)
 			if (err != nil) != test.wantErr {
-				t.Fatalf("ipv4Destination() error = %v, wantErr %t", err, test.wantErr)
+				t.Fatalf("destination() error = %v, wantErr %t", err, test.wantErr)
 			}
 			if err == nil && got != test.want {
-				t.Fatalf("ipv4Destination() = %q, want %q", got, test.want)
+				t.Fatalf("destination() = %q, want %q", got, test.want)
 			}
 		})
 	}
@@ -44,19 +46,20 @@ func TestIPv4Destination(t *testing.T) {
 func TestTunnelRedirectsSyntheticDNSAddressToConfiguredResolver(t *testing.T) {
 	tunnel := &Tunnel{dnsAddress: "127.0.0.53"}
 	tests := []struct {
-		name    string
-		address tcpip.Address
-		port    uint16
-		want    string
+		name     string
+		address  net.IP
+		port     uint16
+		protocol profile.PortProtocol
+		want     string
 	}{
-		{name: "UDP DNS", address: tcpip.AddrFrom4([4]byte{10, 89, 0, 2}), port: 53, want: "127.0.0.53:53"},
-		{name: "TCP DNS", address: tcpip.AddrFrom4([4]byte{10, 89, 0, 2}), port: 53, want: "127.0.0.53:53"},
-		{name: "other port", address: tcpip.AddrFrom4([4]byte{10, 89, 0, 2}), port: 443, want: "10.89.0.2:443"},
-		{name: "other address", address: tcpip.AddrFrom4([4]byte{192, 0, 2, 53}), port: 53, want: "192.0.2.53:53"},
+		{name: "UDP DNS", address: net.ParseIP("10.89.0.2"), port: 53, protocol: profile.PortProtocolUDP, want: "127.0.0.53:53"},
+		{name: "TCP DNS", address: net.ParseIP("10.89.0.2"), port: 53, protocol: profile.PortProtocolTCP, want: "127.0.0.53:53"},
+		{name: "other port", address: net.ParseIP("10.89.0.2"), port: 443, protocol: profile.PortProtocolUDP, want: "10.89.0.2:443"},
+		{name: "other address", address: net.ParseIP("192.0.2.53"), port: 53, protocol: profile.PortProtocolUDP, want: "192.0.2.53:53"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := tunnel.destination(test.address, test.port)
+			got, err := tunnel.destination(test.address, test.port, test.protocol)
 			if err != nil || got != test.want {
 				t.Fatalf("destination() = (%q, %v), want (%q, nil)", got, err, test.want)
 			}

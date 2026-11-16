@@ -168,3 +168,8 @@ Runner проверяет TCP CONNECT, UDP ASSOCIATE, неверный паро�
 
 - Egress журналы перенесены в `~/.isobox/log/<app-id>.log`; каталоги создаются с режимом `0700`, файл открывается с `0600`, `O_NOFOLLOW`, и проверками regular file, owner и hard-link count.
 - `isobox config` показывает новый путь журнала. `go build ./...` и `git diff --check` прошли; Go tests и runtime-проверки для этого изменения не запускались.
+
+### Tunnel test API alignment
+
+- `tunnel_linux_test.go` переведён на актуальный `Tunnel.destination(net.IP, port, protocol)`; TCP/UDP cases передают соответствующий протокол.
+- `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test -run '^TestIPv4Destination$' ./internal/proxy` — прошло; компиляция пакета успешна.
