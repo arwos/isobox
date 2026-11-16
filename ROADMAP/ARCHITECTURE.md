@@ -2,6 +2,8 @@
 
 Статус: roadmap согласован пользователем 2026-11-12; 2026-11-13 пользователь решил полностью отключить IPv6. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация, host preflight, bwrap runtime, профильные mounts, изолированный HOME и ручные GUI grants; F04-T01/T02/T03 прошли пользовательскую runtime-приёмку на Linux Mint 7. F05 содержит режим `off` с fail-closed egress guard и опубликованными IPv4 портами через pasta, а также `direct` на IPv4-only pasta/slirp с DNS, forwarding и runtime fallback до запуска приложения. F06 содержит SOCKS5 TCP/UDP client, IPv4 TUN data plane, DNS fallback и guarded pasta ingress для объявленных host-портов; F06-T05 добавляет встроенный allowlist egress, resolver и журнал событий, но runtime-приёмка F06-T05 ещё открыта. Podman fixture F06-T04 и TUN/прокси сценарий F06-T03 прошли пользовательскую live-приёмку. F07 содержит cgroup/rlimit backend с fail-closed startup gate; F07-T01 прошла live-приёмку на пользовательском systemd scope. F08 содержит пользовательские desktop launchers; прежние layered XDG settings удалены решением F02-T03.
 
+F09 — согласованный план именованных rootless-сетей с несколькими подключениями и DNS aliases; реализация ещё не начата и начинается с feasibility proof.
+
 ## Назначение и границы
 
 `isobox` — модульное консольное приложение для rootless-запуска Linux-программ в ограниченной среде. Поддерживаются GUI-приложения и терминальные команды. Профиль описывает sandbox и может задавать команду приложения по умолчанию; вызывающий пользователь может заменить её, передав команду и аргументы после `--`.
@@ -43,7 +45,7 @@ isobox ps
 Режимы сети: `off`, `direct`, `proxy`, `egress`.
 
 - Профиль может задавать несколько `network.dns` в порядке приоритета; profile-список заменяет одно значение `settings.defaults.dns`. `egress` перебирает upstream DNS последовательно и допускает только адреса, совпавшие с allowlist на TCP/UDP port 53.
-- `off`: приложение не может инициировать запросы наружу, в LAN или на хост. Хост может подключаться к объявленным в профиле портам приложения; допустимы только ответы по этим соединениям.
+- `off`: приложение не может инициировать запросы наружу, в LAN или на хост, кроме трафика к участникам явно подключённых групповых сетей F09. Хост может подключаться к объявленным в профиле портам приложения; допустимы только ответы по этим соединениям.
 - `direct`: rootless IPv4 сеть через `pasta --ipv4-only`; при его отсутствии или startup failure до открытия приложения допускается `slirp4netns` без `--enable-ipv6`, только если preflight подтверждает те же host-forward и DNS требования профиля. Если совместимость не подтверждена или fallback тоже не готов, запуск блокируется.
 - `proxy`: текущая реализация требует alias и использует IPv4-only SOCKS5 client с прозрачным TUN-туннелем. Namespace IPv6 отключается до приложения; TCP передаётся через SOCKS5 `CONNECT`, UDP — через `UDP ASSOCIATE`; DNS и QUIC идут этим путём. Unexpected IPv6 packets, ICMP и raw-сокеты блокируются; отказ SOCKS не переключается на direct.
 - `egress`: отдельный встроенный policy режим на том же IPv4-only TUN. Host-side TCP/UDP dial разрешается только явными IPv4/CIDR правилами; одно правило может включать несколько адресов через повторяемое поле `ip` или его UNIC-список. Доступ ограничивается опциональным списком портов, включительными диапазонами и протоколом; пустой allowlist блокирует egress. Статические DNS A-записи задаются повторяемыми блоками `record <domain>`, каждый блок принимает несколько `ip`; они отвечаются локально, неизвестные имена идут только на явно заданный upstream и только при разрешающем правиле для upstream IP:53. Host loopback доступен через виртуальный endpoint `10.89.0.3`, который внутри egress sandbox также записывается как `host.gateway.internal` в `/etc/hosts`; для соединения требуется явное правило на целевой loopback IP/порт. `proxy` остаётся отдельным внешним SOCKS5 режимом и всегда требует `proxy_alias`; его потоки можно дополнительно фильтровать теми же allow rules.
@@ -51,6 +53,14 @@ isobox ps
 - При объявленных proxy ingress ports pasta используется только для явного ingress forwarding; nftables и marked policy route разрешают через него только ответы по этим соединениям, а основной default route остаётся в SOCKS TUN.
 - Для публикации входящего порта профиль использует повторяемые записи `port <IPv4 host address> <port> [protocol [end_port]];`. Правило может задавать TCP, UDP или оба протокола, один порт или диапазон. Автоматическая публикация не объявленных портов запрещена.
 - Для `off` вместе с входящими портами реализация обязана доказать отсутствие исходящего обхода; если выбранный механизм не может это гарантировать, запуск блокируется.
+
+### Именованные сети F09
+
+- Пользователь явно создаёт и удаляет именованную сеть. Предлагаемый CLI: `isobox network create --name=NAME --subnet=IPv4-CIDR`, `isobox network list`, `isobox network remove --name=NAME`; детали хранения уточняются в реализации.
+- Сеть держит отдельный user-level manager/bridge, запущенный и включённый через `systemd --user`, даже когда в ней нет контейнеров. Удаление сети с активными участниками завершается отказом. Для старта user manager до интерактивного входа systemd требует lingering; isobox не включает его автоматически.
+- Профиль может повторять `group NAME` и `alias NAME`. Каждый контейнер сохраняет собственный network namespace и loopback, получает отдельный уникальный IPv4 адрес в каждой подключённой группе, а его `app-id` и все aliases видны в DNS каждой такой группы. Повторные группы/aliases и адреса обрабатываются без коллизий; пересекающиеся подсети у одновременно подключённых групп отклоняются.
+- Явное членство разрешает обмен трафиком внутри подключённых групп, в том числе при `network.mode off`; при `off` за пределы этих групп исходящий трафик остаётся закрытым. При `direct`, `proxy` и `egress` внешние соединения сохраняют свою текущую политику. Межгрупповая маршрутизация и обход host/LAN правил запрещены.
+- Rootless bridge/veth ещё не подтверждён в текущей модели user namespaces isobox. До выбора реализации нужна feasibility задача F09-T01 с обычным пользователем и проверкой полномочий/границ sandbox. Не добавлять root/setuid helper как неявный fallback.
 
 ### Лимиты и интеграция
 
@@ -86,7 +96,11 @@ internal/integration/   необязательные desktop/system defaults
 - [sing-box SOCKS inbound](https://sing-box.sagernet.org/configuration/inbound/socks/): выбран только как тестовый SOCKS-сервер в Podman; не runtime-зависимость isobox.
 - [systemd-run](https://freedesktop.org/software/systemd/man/latest/systemd-run.html), [systemd resource-control](https://freedesktop.org/software/systemd/man/latest/systemd.resource-control.html) и [systemd.exec](https://freedesktop.org/software/systemd/man/latest/systemd.exec): документируют пользовательские transient scopes, cgroup-лимиты CPU/памяти/tasks и rlimit-параметры, выбранные для F07-T01.
 - [go-unic repository](https://github.com/osspkg/go-unic): используется `go.osspkg.com/unic v1.0.2`; проверка исходников показала, что decoder пропускает неизвестные поля структуры, поэтому isobox выполняет отдельную проверку полей по схеме до `unic.Unmarshal`.
+- [Linux network namespaces](https://man7.org/linux/man-pages/man7/network_namespaces.7.html) и [user namespaces](https://man7.org/linux/man-pages/man7/user_namespaces.7.html): network namespaces изолируют устройства, маршруты, firewall и порты; сетевые операции зависят от user namespace-владельца.
+- [Bubblewrap manual](https://github.com/containers/bubblewrap/blob/main/bwrap.xml): поддерживает `--userns FD` для использования существующего user namespace; совместимость этого режима с текущими bwrap helper/security checks isobox требует feasibility proof.
+- [passt/pasta overview](https://passt.top/about/?h=2026_05_26.038c51e): rootless L4 forwarding не требует создания host veth, тогда как прямое соединение network namespaces через veth требует `CAP_NET_ADMIN`; не считать текущий per-container pasta механизм общей L2-сетью.
+- [systemd loginctl](https://freedesktop.org/software/systemd/man/latest/loginctl.html): `loginctl enable-linger` запускает user manager при загрузке и сохраняет его после logout. F09 не включает lingering без отдельного действия пользователя.
 
 ## Порядок зависимостей
 
-Все feature-группы имеют одинаковый приоритет. Порядок ниже отражает зависимости: foundation → profile → host checks → sandbox → network → SOCKS5 proxy; limits зависят от host checks и sandbox; system integration зависит от profile и sandbox.
+Все feature-группы имеют одинаковый приоритет. Порядок ниже отражает зависимости: foundation → profile → host checks → sandbox → network → SOCKS5 proxy; limits зависят от host checks и sandbox; system integration зависит от profile и sandbox. F09 зависит от sandbox F04, адресного контракта F05-T03, egress-политики F06-T05 и пользовательских systemd units F08-T02. Feasibility spike F09-T01 можно выполнять после F04 независимо от незакрытой runtime-приёмки F05-T03/F06-T05; подключение всех сетевых режимов начинается только после закрытия этих зависимостей.
