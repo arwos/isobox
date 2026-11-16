@@ -39,6 +39,14 @@ network {
 - Участник не получает полномочий owner user namespace: bridge и veth остаются под контролем manager-а. В прототипе bubblewrap дополнительно сбрасывает все известные на проверенном ядре capabilities; проверены `CapEff=0`, отказ `CAP_NET_ADMIN` и запрет вложенного user namespace. Перечень capability names при реализации следует формировать/проверять с учётом `cap_last_cap`, чтобы новые kernel capabilities не остались включёнными.
 - Это доказывает feasibility на проверенных версиях, но не заменяет повторную runtime-приёмку при интеграции с network modes, IPv4 allocation и systemd lifecycle. Успех ограниченной tool sandbox-среды не гарантируется: runner нужно запускать на целевом Linux, где доступны rootless user/network namespaces и netlink bridge/veth операции.
 
+## F09-T02: постоянный network manager
+
+- `isobox network create --name=NAME --subnet=IPv4-CIDR`, `list` и `remove --name=NAME` управляют сетями; `create` требует обычного пользователя, доступный `unshare`, `XDG_RUNTIME_DIR` и отвечающий `systemd --user` до создания постоянного состояния.
+- Конфигурация хранится как приватный JSON `~/.isobox/networks/<name>.json` (0600), каталоги — 0700. Имя ограничено ASCII буквами/цифрами/`_`/`-`. CIDR IPv4 канонизируется и должен быть от `/8` до `/29`; первый usable IP резервируется bridge gateway. Linux interface name детерминированный короткий hash сети, не зависит от пользовательского имени.
+- Для сети устанавливается `isobox-network-<name>.service` в XDG user unit directory. Unit `Type=notify`, включается в `default.target`, запускается сразу и перезапускается после сбоя; manager сообщает `READY=1` только после создания bridge, назначения gateway и открытия control socket. Stop/disable удаляет socket, после чего net namespace и bridge исчезают. До входа пользователя user manager запускается только если настроен lingering; isobox не включает его.
+- Status socket находится в проверенном приватном `$XDG_RUNTIME_DIR/isobox/`, имеет mode 0600 и предоставляет read-only сведения о bridge и числе присоединённых интерфейсов. `remove` отказывает при активных интерфейсах; если активный manager нельзя опросить или найден stale socket, удаление fail-closed. F09-T03 должен сохранить атомарность между этой проверкой и присоединением участника.
+- Live-приёмка через пользовательский systemd прошла для create/enable/start, list, service restart и remove. `default.target` enablement подтверждён. Перезапуск всего user manager, boot recovery с lingering и отказ remove при реальном активном veth-участнике ещё не проверены; последнее будет доступно после F09-T03. До этих проверок F09-T02 остаётся `[~]`.
+
 ## Зависимости
 
 - F04 предоставляет bwrap helper, startup gate и изоляцию sandbox.

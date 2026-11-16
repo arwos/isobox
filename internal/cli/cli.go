@@ -25,13 +25,17 @@ const rootUsage = `Usage:
   isobox run [--profile=PATH] [--app-id=ID] [-- APP [ARGS...]]
   isobox config [--profile=PATH] [--app-id=ID] [-- APP [ARGS...]]
   isobox ps
+  isobox network create --name=NAME --subnet=IPv4-CIDR
+  isobox network list
+  isobox network remove --name=NAME
 
 Commands:
   run          Prepare an isolated application launch
   config       Show launch parameters without starting the application
   ps           List applications running through isobox
+  network      Manage persistent rootless group networks
   proxy        Manage SOCKS5 proxy aliases
-  integration  Manage optional user desktop launchers and systemd units
+  integration  Manage optional user desktop launchers and application units
   help         Show this help
 `
 
@@ -72,6 +76,8 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		return executeConfig(args[1:], stdout, stderr)
 	case "ps":
 		return executePS(args[1:], stdout, stderr)
+	case "network":
+		return executeNetwork(args[1:], stdout, stderr)
 	case "proxy":
 		return executeProxy(args[1:], stdout, stderr)
 	case "integration":
