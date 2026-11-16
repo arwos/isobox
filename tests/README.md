@@ -41,6 +41,11 @@
 - Этот runner также проверяет, что сочетание `off` с опубликованным портом и `process_count` сохраняет точный лимит задач приложения после firewall setup.
 - Нужны `systemd-run`, пользовательский systemd manager и cgroup v2. Проверка сочетания с опубликованным портом дополнительно требует `pasta`, `nft` и `systemctl`; если этих сетевых инструментов нет, сценарий отдельно сообщает `SKIP`.
 
+## Именованные групповые сети
+
+- `./tests/run.sh f09-rootless-bridge` — rootless feasibility proof: создаёт временный bridge/veth и два network namespaces, проверяет TCP/UDP связь через bubblewrap, отдельные loopback, отсутствие default route, сброс capabilities и запрет вложенных user namespaces.
+- Нужны Linux, `unshare`, `nsenter`, `ip`, `bwrap` с поддержкой `--share-net`, `--disable-userns`, `--assert-userns-disabled` и `--cap-drop`, а также Python 3. Запускайте от обычного пользователя, без `sudo`; требуются доступные rootless user/network namespaces и netlink bridge/veth операции. Все создаваемые скриптом процессы и временные данные удаляются при выходе.
+
 Чтобы проверить только локальные namespace и forwarding без внешнего Интернета, передайте `--local-only` в один из первых трёх сценариев, например:
 
 ```sh

@@ -26,4 +26,8 @@
 
 ## Фактические проверки
 
-- На этапе планирования команды, unit tests, host/runtime runners и systemd сценарии не запускались. По мере реализации записывать точные команды, результат и ограничения окружения.
+- `bash -n tests/f09-network-groups/rootless-bridge/run.sh` — passed.
+- `bash tests/f09-network-groups/rootless-bridge/run.sh` — passed от обычного пользователя без `sudo` на Linux `6.12.116+deb13-amd64`, bubblewrap `0.12.0`; для выполнения внутри этой ограниченной agent-среды потребовалось разрешение на запуск временного network namespace/netlink прототипа. Скрипт не выполнялся от root и удалил созданные namespace-процессы и временные файлы по завершении.
+- Результат прототипа: bridge и две veth-пары созданы в rootless user/network namespaces; участники получили `192.168.240.2/24` и `192.168.240.3/24`, разные netns inode и отдельные `lo`; взаимный TCP и UDP обмен прошёл через bubblewrap `--share-net`; loopback между участниками недоступен; у участников нет default route и host network не подключена; `CAP_NET_ADMIN` не позволяет управлять bridge/veth, вложенный user namespace заблокирован, `CapEff=0` при явном сбросе capabilities.
+- Передача user namespace manager-а через `bwrap --userns FD` — не подходит для проверенной модели: bubblewrap завершился сообщением `Joining the specified user namespace failed, it might not be a descendant of the current user namespace`. Выбрана модель отдельного app user namespace с присоединением к уже настроенному network namespace через `--share-net`.
+- Не запускались: весь Go unit suite, F05/F06 runtime-приёмка, интеграция режимов direct/proxy/egress, внешняя host/LAN connectivity acceptance и user-systemd lifecycle. Эти проверки остаются в F09-T02—T05 и их закрытых зависимостях.

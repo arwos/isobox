@@ -30,6 +30,15 @@ network {
 - Коллизия app-id/alias в пределах одной группы должна завершать попытку присоединения ошибкой; одно имя может повторяться в разных группах.
 - Точное место хранения сетевых описаний внутри `~/.isobox` и детали unit naming остаются решением реализации. За основу брать проверки владельца, symlink и приватных прав из существующих F02/F08 integrations.
 
+## Решение F09-T01: rootless bridge
+
+- Feasibility подтверждена прототипом `tests/f09-network-groups/rootless-bridge/run.sh` на Linux 6.12.116 и bubblewrap 0.12.0 от обычного пользователя без `sudo`.
+- Долгоживущий manager должен создать собственные user и network namespaces и держать bridge внутри них. Он владеет bridge и создаёт отдельный network namespace для каждого участника как потомка своего user namespace; veth связывает namespace участника с bridge. Host network namespace к bridge не подключается.
+- Запуск приложения: `nsenter -n` входит только в подготовленный network namespace участника, затем bubblewrap создаёт sandbox user namespace и использует `--share-net`. Передачу user namespace manager-а через `--userns FD` применять не следует: prototype bubblewrap отклонил присоединение с сообщением, что namespace не является потомком текущего. Отдельный app user namespace также сохраняет текущую модель UID/GID и позволяет запретить дальнейшее создание user namespace через `--disable-userns --assert-userns-disabled`.
+- У app namespace не должно быть default route; только адрес своей группы и connected route. Поэтому manager topology сама по себе не даёт host/LAN/Internet egress. Режимы direct/proxy/egress подключаются позднее отдельными маршрутами и правилами F09-T05, без обхода их policy.
+- Участник не получает полномочий owner user namespace: bridge и veth остаются под контролем manager-а. В прототипе bubblewrap дополнительно сбрасывает все известные на проверенном ядре capabilities; проверены `CapEff=0`, отказ `CAP_NET_ADMIN` и запрет вложенного user namespace. Перечень capability names при реализации следует формировать/проверять с учётом `cap_last_cap`, чтобы новые kernel capabilities не остались включёнными.
+- Это доказывает feasibility на проверенных версиях, но не заменяет повторную runtime-приёмку при интеграции с network modes, IPv4 allocation и systemd lifecycle. Успех ограниченной tool sandbox-среды не гарантируется: runner нужно запускать на целевом Linux, где доступны rootless user/network namespaces и netlink bridge/veth операции.
+
 ## Зависимости
 
 - F04 предоставляет bwrap helper, startup gate и изоляцию sandbox.

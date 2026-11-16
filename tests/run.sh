@@ -21,6 +21,7 @@ Scenarios:
   socks5-client             Run local SOCKS5 client tests
   socks5-client-race        Run SOCKS5 client tests with the race detector
   limits                    Run resource limit acceptance checks
+  f09-rootless-bridge       Verify rootless bridge/veth feasibility for F09
 
 Every scenario prints the path to its saved result.txt. Run as your regular
 user, not with sudo. Read tests/README.md for prerequisites and scenario details.
@@ -87,6 +88,9 @@ case "$scenario" in
         ;;
     limits)
         script=tests/f07-limits/run.sh
+        ;;
+    f09-rootless-bridge)
+        script=tests/f09-network-groups/rootless-bridge/run.sh
         ;;
     *)
         printf 'unknown test scenario: %s\n\n' "$scenario" >&2

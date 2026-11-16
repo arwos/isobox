@@ -2,7 +2,7 @@
 
 Статус: roadmap согласован пользователем 2026-11-12; 2026-11-13 пользователь решил полностью отключить IPv6. Реализованы CLI-каркас, типы профиля, UNIC decode/валидация, host preflight, bwrap runtime, профильные mounts, изолированный HOME и ручные GUI grants; F04-T01/T02/T03 прошли пользовательскую runtime-приёмку на Linux Mint 7. F05 содержит режим `off` с fail-closed egress guard и опубликованными IPv4 портами через pasta, а также `direct` на IPv4-only pasta/slirp с DNS, forwarding и runtime fallback до запуска приложения. F06 содержит SOCKS5 TCP/UDP client, IPv4 TUN data plane, DNS fallback и guarded pasta ingress для объявленных host-портов; F06-T05 добавляет встроенный allowlist egress, resolver и журнал событий, но runtime-приёмка F06-T05 ещё открыта. Podman fixture F06-T04 и TUN/прокси сценарий F06-T03 прошли пользовательскую live-приёмку. F07 содержит cgroup/rlimit backend с fail-closed startup gate; F07-T01 прошла live-приёмку на пользовательском systemd scope. F08 содержит пользовательские desktop launchers; прежние layered XDG settings удалены решением F02-T03.
 
-F09 — согласованный план именованных rootless-сетей с несколькими подключениями и DNS aliases; реализация ещё не начата и начинается с feasibility proof.
+F09 — согласованный план именованных rootless-сетей с несколькими подключениями и DNS aliases. F09-T01 подтвердил bridge/veth модель rootless на Linux 6.12.116 и bubblewrap 0.12.0; manager namespace остаётся владельцем сети, приложения присоединяются к подготовленному network namespace через `--share-net`.
 
 ## Назначение и границы
 
@@ -60,7 +60,7 @@ isobox ps
 - Сеть держит отдельный user-level manager/bridge, запущенный и включённый через `systemd --user`, даже когда в ней нет контейнеров. Удаление сети с активными участниками завершается отказом. Для старта user manager до интерактивного входа systemd требует lingering; isobox не включает его автоматически.
 - Профиль может повторять `group NAME` и `alias NAME`. Каждый контейнер сохраняет собственный network namespace и loopback, получает отдельный уникальный IPv4 адрес в каждой подключённой группе, а его `app-id` и все aliases видны в DNS каждой такой группы. Повторные группы/aliases и адреса обрабатываются без коллизий; пересекающиеся подсети у одновременно подключённых групп отклоняются.
 - Явное членство разрешает обмен трафиком внутри подключённых групп, в том числе при `network.mode off`; при `off` за пределы этих групп исходящий трафик остаётся закрытым. При `direct`, `proxy` и `egress` внешние соединения сохраняют свою текущую политику. Межгрупповая маршрутизация и обход host/LAN правил запрещены.
-- Rootless bridge/veth ещё не подтверждён в текущей модели user namespaces isobox. До выбора реализации нужна feasibility задача F09-T01 с обычным пользователем и проверкой полномочий/границ sandbox. Не добавлять root/setuid helper как неявный fallback.
+- Rootless bridge/veth подтверждён прототипом от обычного пользователя: отдельный manager user/network namespace владеет bridge, а sandbox получает отдельный network namespace и veth. Проверены IPv4 TCP/UDP между двумя sandbox, изоляция loopback, отсутствие default route, запрет app namespace операций и сброс capabilities. Доказательство ограничено Linux 6.12.116 и bubblewrap 0.12.0; повторить runtime-проверки при интеграции F09-T02—T05. Не добавлять root/setuid helper как неявный fallback.
 
 ### Лимиты и интеграция
 
