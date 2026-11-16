@@ -10,10 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/arwos/isobox/internal/profile"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
+
+	"github.com/arwos/isobox/internal/profile"
 )
 
 func TestIPv4Destination(t *testing.T) {

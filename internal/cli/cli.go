@@ -130,7 +130,7 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
 	}
-	network, err := sandbox.PrepareNetwork(capabilities.Network, capabilities.Pasta, capabilities.Slirp4netns)
+	network, err := sandbox.PrepareNetwork(capabilities.Network, capabilities.Pasta, capabilities.Slirp4netns, effectiveProfile.Network)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "isobox run: cannot prepare network: %v\n", err)
 		return 2

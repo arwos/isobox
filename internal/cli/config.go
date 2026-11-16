@@ -79,7 +79,7 @@ func executeConfig(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "isobox config: %v\n", err)
 		return 2
 	}
-	network, err := sandbox.PrepareNetwork(capabilities.Network, capabilities.Pasta, capabilities.Slirp4netns)
+	network, err := sandbox.PrepareNetwork(capabilities.Network, capabilities.Pasta, capabilities.Slirp4netns, effective.Network)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "isobox config: cannot prepare network configuration: %v\n", err)
 		return 2
@@ -112,8 +112,37 @@ func printLaunchPlan(output io.Writer, options RunOptions, effective profile.Eff
 		row("Аргументы", strings.Join(arguments, " "))
 	}
 	row("App ID", valueOr(options.AppID, "не задан"))
+	account := effective.User
+	if account.Name == "" {
+		account = profile.Account{ID: uint32(os.Geteuid()), Name: "isobox"}
+	}
+	groups := effective.Groups
+	if len(groups) == 0 {
+		groups = []profile.Account{{ID: uint32(os.Getegid()), Name: "isobox"}}
+	}
+	row("Пользователь sandbox", fmt.Sprintf("%s (UID %d)", account.Name, account.ID))
+	for index, group := range groups {
+		role := "дополнительная запись /etc/group"
+		if index == 0 {
+			role = "основная, GID процесса"
+		}
+		row(fmt.Sprintf("Группа sandbox[%d]", index), fmt.Sprintf("%s (GID %d; %s)", group.Name, group.ID, role))
+	}
+	row("Дополнительные GID процесса", "профилем не задаются")
+	row("Host mapping", fmt.Sprintf("UID %d → host UID %d; GID %d → host GID %d", account.ID, os.Geteuid(), groups[0].ID, os.Getegid()))
+	row("Hosts sandbox", fmt.Sprintf("localhost, %s → 127.0.0.1", argumentValue(bubblewrapArgs, "--hostname")))
 	row("HOME в sandbox", homeSourceFromArgs(bubblewrapArgs))
 	row("Сеть", string(effective.NetworkMode))
+	if effective.NetworkMode != profile.NetworkModeOff {
+		row("Сетевой интерфейс", network.InterfaceName)
+	}
+	if network.Subnet != "" {
+		row("Подсеть sandbox", network.Subnet)
+		row("IPv4 sandbox", network.GuestAddress)
+		if network.GatewayAddress != "" {
+			row("Gateway backend", network.GatewayAddress)
+		}
+	}
 	if effective.NetworkMode == profile.NetworkModeEgress {
 		appID := options.AppID
 		if appID == "" {
@@ -137,13 +166,15 @@ func printLaunchPlan(output io.Writer, options RunOptions, effective profile.Eff
 	if network.Fallback != nil {
 		row("Fallback backend", backendName(network.Fallback.Backend))
 	}
-	if effective.NetworkMode == profile.NetworkModeEgress {
+	switch effective.NetworkMode {
+	case profile.NetworkModeEgress:
 		policy := "обязательный allowlist"
 		if len(effective.Network.Proxy.Allow) == 0 {
 			policy = "правил нет; весь egress закрыт"
 		}
 		row("Host egress policy", policy)
-	} else if effective.NetworkMode == profile.NetworkModeProxy {
+		row("Host gateway в /etc/hosts", "host.gateway.internal → "+network.GatewayAddress)
+	case profile.NetworkModeProxy:
 		if len(effective.Network.Proxy.Allow) == 0 {
 			row("Host egress policy", "нет дополнительного allowlist")
 		} else {
@@ -236,6 +267,15 @@ func homeSourceFromArgs(args []string) string {
 		}
 	}
 	return "не определён"
+}
+
+func argumentValue(args []string, name string) string {
+	for index := 0; index+1 < len(args); index++ {
+		if args[index] == name {
+			return args[index+1]
+		}
+	}
+	return "не задан"
 }
 
 func backendName(backend preflight.BackendKind) string {

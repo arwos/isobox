@@ -67,8 +67,8 @@ func TestPrepareNetworkBuildsProxyResolverWithoutExposingCredentials(t *testing.
 	}
 }
 
-func TestProxyResolverUsesFirstHostIPv4AddressWhenNoOverrideExists(t *testing.T) {
-	resolver, destination, err := proxyResolver(preflight.BackendSelection{
+func TestProxyResolversUsesFirstHostIPv4AddressWhenNoOverrideExists(t *testing.T) {
+	resolver, destinations, err := proxyResolvers(preflight.BackendSelection{
 		Mode:       profile.NetworkModeProxy,
 		Network:    preflight.BackendProxyTUN,
 		ProxyAlias: "secure-exit",
@@ -77,20 +77,20 @@ func TestProxyResolverUsesFirstHostIPv4AddressWhenNoOverrideExists(t *testing.T)
 	if err != nil {
 		t.Fatalf("proxyResolver() error = %v", err)
 	}
-	if string(resolver) != "nameserver "+proxy.TransparentDNSAddress+"\n" || destination != "192.0.2.53" {
-		t.Fatalf("proxy resolver = (%q, %q), want synthetic endpoint and the first IPv4 host resolver", resolver, destination)
+	if string(resolver) != "nameserver "+proxy.TransparentDNSAddress+"\n" || len(destinations) != 1 || destinations[0] != "192.0.2.53" {
+		t.Fatalf("proxy resolvers = (%q, %q), want synthetic endpoint and the first IPv4 host resolver", resolver, destinations)
 	}
 }
 
-func TestProxyResolverRequiresIPv4HostResolverWhenNoOverrideExists(t *testing.T) {
-	_, _, err := proxyResolver(preflight.BackendSelection{
+func TestProxyResolversRequiresIPv4HostResolverWhenNoOverrideExists(t *testing.T) {
+	_, _, err := proxyResolvers(preflight.BackendSelection{
 		Mode:       profile.NetworkModeProxy,
 		Network:    preflight.BackendProxyTUN,
 		ProxyAlias: "secure-exit",
 		UseHostDNS: true,
 	}, []byte("nameserver 2001:db8::53\n"))
 	if err == nil || !strings.Contains(err.Error(), "no usable IPv4 nameserver") {
-		t.Fatalf("proxyResolver() error = %v, want missing IPv4 host resolver", err)
+		t.Fatalf("proxyResolvers() error = %v, want missing IPv4 host resolver", err)
 	}
 }
 

@@ -17,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/arwos/isobox/internal/profile"
 	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -29,6 +28,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
+
+	"github.com/arwos/isobox/internal/profile"
 )
 
 const (
@@ -46,32 +47,34 @@ const (
 // Tunnel owns the IPv4-only user-space stack attached to tunFile. Credentials
 // remain inside the proxy package; callers receive only lifecycle methods.
 type Tunnel struct {
-	tunFile      *os.File
-	stack        *stack.Stack
-	link         *channel.Endpoint
-	mode         profile.NetworkMode
-	client       *socks5Client
-	dnsAddress   string
-	dnsAddresses []net.IP
-	allowRules   []compiledAllowRule
-	enforceACL   bool
-	dnsRecords   map[string][]net.IP
-	eventLog     *egressLogger
-	ctx          context.Context
-	cancel       context.CancelFunc
-	deviceCtx    context.Context
-	deviceEnd    context.CancelFunc
-	flows        chan struct{}
-	done         chan struct{}
-	readDone     chan struct{}
-	doneOnce     sync.Once
-	closeOnce    sync.Once
-	flowWG       sync.WaitGroup
-	deviceWG     sync.WaitGroup
-	flowMu       sync.Mutex
-	closing      bool
-	mu           sync.RWMutex
-	err          error
+	tunFile         *os.File
+	stack           *stack.Stack
+	link            *channel.Endpoint
+	mode            profile.NetworkMode
+	dnsEndpoint     string
+	gatewayEndpoint string
+	client          *socks5Client
+	dnsAddress      string
+	dnsAddresses    []net.IP
+	allowRules      []compiledAllowRule
+	enforceACL      bool
+	dnsRecords      map[string][]net.IP
+	eventLog        *egressLogger
+	ctx             context.Context
+	cancel          context.CancelFunc
+	deviceCtx       context.Context
+	deviceEnd       context.CancelFunc
+	flows           chan struct{}
+	done            chan struct{}
+	readDone        chan struct{}
+	doneOnce        sync.Once
+	closeOnce       sync.Once
+	flowWG          sync.WaitGroup
+	deviceWG        sync.WaitGroup
+	flowMu          sync.Mutex
+	closing         bool
+	mu              sync.RWMutex
+	err             error
 }
 
 // StartTUNTunnel takes ownership of tunFile on both success and failure.
@@ -105,6 +108,18 @@ func StartTUNTunnelWithPolicy(tunFile *os.File, policy TUNPolicy) (*Tunnel, erro
 		_ = tunFile.Close()
 		return nil, fmt.Errorf("egress network mode cannot use a SOCKS5 alias")
 	}
+	dnsEndpoint := policy.ResolverEndpoint
+	if dnsEndpoint == "" {
+		dnsEndpoint = TransparentDNSAddress
+	}
+	gatewayEndpoint := policy.HostGatewayEndpoint
+	if gatewayEndpoint == "" {
+		gatewayEndpoint = "10.89.0.3"
+	}
+	if net.ParseIP(dnsEndpoint) == nil || net.ParseIP(dnsEndpoint).To4() == nil || net.ParseIP(gatewayEndpoint) == nil || net.ParseIP(gatewayEndpoint).To4() == nil || dnsEndpoint == gatewayEndpoint {
+		_ = tunFile.Close()
+		return nil, fmt.Errorf("TUN resolver and host gateway endpoints must be distinct IPv4 addresses")
+	}
 	dnsAddressValues := append([]string(nil), policy.DNSAddresses...)
 	if len(dnsAddressValues) == 0 && policy.DNSAddress != "" {
 		dnsAddressValues = []string{policy.DNSAddress}
@@ -117,7 +132,7 @@ func StartTUNTunnelWithPolicy(tunFile *os.File, policy TUNPolicy) (*Tunnel, erro
 			return nil, fmt.Errorf("proxy DNS destination must be an IPv4 address")
 		}
 		dnsAddress := parsedDNS.To4().String()
-		if dnsAddress == TransparentDNSAddress {
+		if dnsAddress == dnsEndpoint {
 			_ = tunFile.Close()
 			return nil, fmt.Errorf("upstream DNS cannot point to the internal resolver endpoint")
 		}
@@ -161,10 +176,12 @@ func StartTUNTunnelWithPolicy(tunFile *os.File, policy TUNPolicy) (*Tunnel, erro
 	ctx, cancel := context.WithCancel(context.Background())
 	deviceCtx, deviceEnd := context.WithCancel(context.Background())
 	tunnel := &Tunnel{
-		tunFile:      tunFile,
-		mode:         policy.Mode,
-		client:       client,
-		dnsAddresses: parsedDNSAddresses,
+		tunFile:         tunFile,
+		mode:            policy.Mode,
+		dnsEndpoint:     dnsEndpoint,
+		gatewayEndpoint: gatewayEndpoint,
+		client:          client,
+		dnsAddresses:    parsedDNSAddresses,
 		dnsAddress: func() string {
 			if len(parsedDNSAddresses) != 0 {
 				return parsedDNSAddresses[0].String()
@@ -331,7 +348,7 @@ func (tunnel *Tunnel) handleTCP(request *tcp.ForwarderRequest) {
 		return
 	}
 	connectionID := request.ID()
-	isDNS := net.IP(connectionID.LocalAddress.AsSlice()).To4().Equal(net.ParseIP(TransparentDNSAddress).To4()) && connectionID.LocalPort == 53
+	isDNS := net.IP(connectionID.LocalAddress.AsSlice()).To4().Equal(net.ParseIP(tunnel.resolverEndpoint()).To4()) && connectionID.LocalPort == 53
 	var destination string
 	var err error
 	if !isDNS {
@@ -373,7 +390,7 @@ func (tunnel *Tunnel) handleUDP(request *udp.ForwarderRequest) bool {
 		return false
 	}
 	connectionID := request.ID()
-	isDNS := net.IP(connectionID.LocalAddress.AsSlice()).To4().Equal(net.ParseIP(TransparentDNSAddress).To4()) && connectionID.LocalPort == 53
+	isDNS := net.IP(connectionID.LocalAddress.AsSlice()).To4().Equal(net.ParseIP(tunnel.resolverEndpoint()).To4()) && connectionID.LocalPort == 53
 	var destination string
 	var err error
 	if !isDNS {

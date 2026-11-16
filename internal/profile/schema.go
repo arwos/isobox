@@ -30,15 +30,26 @@ const (
 
 // Profile describes sandbox permissions and defaults for an application.
 type Profile struct {
-	Version  int               `unic:"version,default=1"`
-	HomePath string            `unic:"home_path,omitempty"`
-	Env      map[string]string `unic:"env,omitempty"`
-	Path     []string          `unic:"path,omitempty"`
-	Command  []string          `unic:"command,omitempty"`
-	Mounts   []Mount           `unic:"mount,omitempty"`
-	Network  NetworkConfig     `unic:"network"`
-	GUI      GUIAccess         `unic:"gui"`
-	Limits   ResourceLimits    `unic:"limits"`
+	Version   int               `unic:"version,default=1"`
+	User      Account           `unic:"-"`
+	Groups    []Account         `unic:"-"`
+	UserArgs  []any             `unic:"user,omitempty"`
+	GroupArgs []any             `unic:"group,omitempty"`
+	HomePath  string            `unic:"home_path,omitempty"`
+	Env       map[string]string `unic:"env,omitempty"`
+	Path      []string          `unic:"path,omitempty"`
+	Command   []string          `unic:"command,omitempty"`
+	Mounts    []Mount           `unic:"mount,omitempty"`
+	Network   NetworkConfig     `unic:"network"`
+	GUI       GUIAccess         `unic:"gui"`
+	Limits    ResourceLimits    `unic:"limits"`
+}
+
+// Account identifies a user or group inside the sandbox account databases.
+// The primary user and group IDs are also used as the process credentials.
+type Account struct {
+	ID   uint32
+	Name string
 }
 
 // Mount grants access to one host path at one path inside the sandbox.
@@ -51,13 +62,17 @@ type Mount struct {
 // NetworkConfig sets the network policy and optional published ports.
 // An empty Mode inherits the user's isobox default; the built-in default is off.
 type NetworkConfig struct {
-	Mode       NetworkMode `unic:"mode,omitempty"`
-	DNS        []string    `unic:"dns,omitempty"`
-	ProxyAlias string      `unic:"proxy_alias,omitempty"`
-	Proxy      ProxyPolicy `unic:"proxy"`
-	Resolver   Resolver    `unic:"resolver"`
-	Ports      []PortRule  `unic:"-"`              // Normalized host forwards used by runtime code.
-	PortValues []any       `unic:"port,omitempty"` // Raw positional UNIC values, normalized by DecodeProfile.
+	// InterfaceName and Subnet are positional attributes on the network block.
+	// A CIDR may be supplied as the first attribute without an interface name.
+	InterfaceName string      `unic:"interface,attr=1"`
+	Subnet        string      `unic:"subnet,attr=2"`
+	Mode          NetworkMode `unic:"mode,omitempty"`
+	DNS           []string    `unic:"dns,omitempty"`
+	ProxyAlias    string      `unic:"proxy_alias,omitempty"`
+	Proxy         ProxyPolicy `unic:"proxy"`
+	Resolver      Resolver    `unic:"resolver"`
+	Ports         []PortRule  `unic:"-"`              // Normalized host forwards used by runtime code.
+	PortValues    []any       `unic:"port,omitempty"` // Raw positional UNIC values, normalized by DecodeProfile.
 }
 
 // ProxyPolicy contains explicit destination rules for egress and optional

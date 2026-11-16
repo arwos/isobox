@@ -27,7 +27,7 @@ const (
 	proxyIngressConnectionTag = uint32(0x49534f42)
 )
 
-func installProxyIngressFilter(nftPath string, tcpPorts, udpPorts []string) error {
+func installProxyIngressFilter(nftPath string, tcpPorts, udpPorts []string, tunNames ...string) error {
 	if nftPath == "" || !strings.HasPrefix(nftPath, "/") {
 		return fmt.Errorf("an absolute nftables executable path is required")
 	}
@@ -35,7 +35,7 @@ func installProxyIngressFilter(nftPath string, tcpPorts, udpPorts []string) erro
 		return fmt.Errorf("proxy ingress filter requires at least one announced TCP or UDP port")
 	}
 	command := exec.Command(nftPath, "-f", "-")
-	command.Stdin = bytes.NewBufferString(buildProxyIngressFilterRules(tcpPorts, udpPorts))
+	command.Stdin = bytes.NewBufferString(buildProxyIngressFilterRules(tcpPorts, udpPorts, tunNames...))
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("nft -f - failed: %w (%s)", err, strings.TrimSpace(string(output)))
@@ -43,12 +43,16 @@ func installProxyIngressFilter(nftPath string, tcpPorts, udpPorts []string) erro
 	return nil
 }
 
-func buildProxyIngressFilterRules(tcpPorts, udpPorts []string) string {
+func buildProxyIngressFilterRules(tcpPorts, udpPorts []string, tunNames ...string) string {
+	tunName := proxyTUNName
+	if len(tunNames) != 0 && tunNames[0] != "" {
+		tunName = tunNames[0]
+	}
 	var rules strings.Builder
 	rules.WriteString("table inet isobox {\n")
 	rules.WriteString(" chain input { type filter hook input priority -150; policy drop;\n")
 	rules.WriteString("  iifname \"lo\" accept\n")
-	rules.WriteString("  iifname \"" + proxyTUNName + "\" ct state established accept\n")
+	rules.WriteString("  iifname \"" + tunName + "\" ct state established accept\n")
 	rules.WriteString("  iifname \"" + proxyIngressName + "\" ct state established ct mark " + fmt.Sprintf("0x%x", proxyIngressConnectionTag) + " accept\n")
 	if len(tcpPorts) != 0 {
 		rules.WriteString("  iifname \"" + proxyIngressName + "\" tcp dport { " + strings.Join(tcpPorts, ", ") + " } ct state new ct mark set " + fmt.Sprintf("0x%x", proxyIngressConnectionTag) + " accept\n")
@@ -62,7 +66,7 @@ func buildProxyIngressFilterRules(tcpPorts, udpPorts []string) string {
 	rules.WriteString(" }\n")
 	rules.WriteString(" chain output { type filter hook output priority -150; policy drop;\n")
 	rules.WriteString("  oifname \"lo\" accept\n")
-	rules.WriteString("  oifname \"" + proxyTUNName + "\" accept\n")
+	rules.WriteString("  oifname \"" + tunName + "\" accept\n")
 	rules.WriteString("  oifname \"" + proxyIngressName + "\" ct mark " + fmt.Sprintf("0x%x", proxyIngressConnectionTag) + " ct state established accept\n")
 	rules.WriteString(" }\n")
 	rules.WriteString(" chain forward { type filter hook forward priority -150; policy drop; }\n")
@@ -73,8 +77,12 @@ func buildProxyIngressFilterRules(tcpPorts, udpPorts []string) string {
 // configureProxyIngressRouting keeps the SOCKS TUN as the only main-table
 // default and installs a marked-only policy route over pasta for replies to
 // host-initiated published-port connections.
-func configureProxyIngressRouting() error {
-	tun, err := netlink.LinkByName(proxyTUNName)
+func configureProxyIngressRouting(tunNames ...string) error {
+	tunName := proxyTUNName
+	if len(tunNames) != 0 && tunNames[0] != "" {
+		tunName = tunNames[0]
+	}
+	tun, err := netlink.LinkByName(tunName)
 	if err != nil {
 		return fmt.Errorf("find proxy TUN interface: %w", err)
 	}

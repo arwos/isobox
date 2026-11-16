@@ -105,6 +105,7 @@ func ensurePrivateProfileDirectory(path string) error {
 		return fmt.Errorf("directory is not owned by the current user")
 	}
 	if info.Mode().Perm() != 0o700 {
+		// #nosec G302 -- directories need execute permission for owner-only traversal.
 		if err := os.Chmod(path, 0o700); err != nil {
 			return fmt.Errorf("set directory mode to 0700: %w", err)
 		}

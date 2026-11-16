@@ -124,6 +124,17 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 		"--quiet", "--foreground", "--pid", "--dns-forward", "--dns-host", "--ipv4-only")
 	slirpSupported := capabilities.Slirp4netns != "" && capabilities.SlirpInspectionError == "" && hasAllOptions(capabilities.Slirp4netnsOptions,
 		"--configure", "--ready-fd", "--exit-fd")
+	customNetwork := config.Network.InterfaceName != "" || config.Network.Subnet != ""
+	if customNetwork {
+		required := []string{"--ns-ifname"}
+		if config.Network.Subnet != "" {
+			required = append(required, "--address", "--netmask", "--gateway")
+		}
+		pastaSupported = pastaSupported && hasAllOptions(capabilities.PastaOptions, required...)
+		// slirp4netns assigns its own fixed guest address; it cannot honor the
+		// profile's random address allocation contract.
+		slirpSupported = false
+	}
 	if len(config.Network.Ports) != 0 {
 		slirpSupported = slirpSupported && hasAllOptions(capabilities.Slirp4netnsOptions, "--api-socket")
 	}
@@ -176,6 +187,9 @@ func SelectBackend(config profile.EffectiveProfile, capabilities Capabilities) (
 		"--config-net", "--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns",
 		"--quiet", "--foreground", "--pid", "--dns-forward", "--dns-host", "--ipv4-only") {
 		reasons = append(reasons, "pasta lacks required network, lifecycle, or DNS-forwarding options")
+	}
+	if customNetwork {
+		reasons = append(reasons, "custom interface/subnet requires pasta with --ns-ifname and, for a subnet, --address/--netmask/--gateway")
 	}
 	if capabilities.Slirp4netns == "" {
 		reasons = append(reasons, "slirp4netns was not found")

@@ -331,13 +331,14 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 					networkPID := childPID
 					if proxyTUN {
 						var tunFile *os.File
-						networkPID, tunFile, err = proxyGate.WaitForTUN(hostNetworkNamespace, childPID)
+						networkPID, tunFile, err = proxyGate.WaitForTUN(hostNetworkNamespace, childPID, network.InterfaceName)
 						applicationPID = networkPID
 						if err == nil {
 							var tunnel *proxy.Tunnel
 							tunnel, err = proxy.StartTUNTunnelWithPolicy(tunFile, proxy.TUNPolicy{
 								Mode: network.Mode, AppID: commandEnvironment(command.Env, processlist.EnvAppID),
 								ProxyAlias: network.ProxyAlias, DNSAddress: network.ProxyDNSAddress, DNSAddresses: network.ProxyDNSAddresses,
+								ResolverEndpoint: network.ResolverEndpoint, HostGatewayEndpoint: network.GatewayAddress,
 								Allow: network.ProxyAllowRules, Records: network.ResolverRecords,
 							})
 							if err == nil {
@@ -724,7 +725,7 @@ func terminateLaunch(command *exec.Cmd, childPID int) {
 func startNetworkBackend(network NetworkRuntime, namespacePID int, rules []profile.PortRule, stdout, stderr io.Writer) (managedNetworkProcess, error) {
 	switch network.activeBackend() {
 	case "pasta":
-		return startPasta(network.Executable, namespacePID, rules, network.Mode, network.PastaDNSArgs, stdout, stderr)
+		return startPasta(network.Executable, namespacePID, rules, network.Mode, network.PastaDNSArgs, stdout, stderr, network)
 	case "slirp4netns":
 		return startSlirp(network.Executable, namespacePID, rules, stdout, stderr)
 	default:

@@ -20,8 +20,8 @@
   - Приёмка: каждое разрешение можно включить независимо; выключенные socket/device/bus недоступны приложению.
   - Реализация и пользовательская runtime-приёмка завершены. Отчёт `/tmp/isobox-test-results/f04-gui-grants.4bDuLc/result.txt` на `0a567ca` подтверждает default-deny, независимые Wayland/X11/PipeWire/PulseAudio/GPU/session-bus grants, отказ до приложения для некорректных и недоступных разрешений, cleanup synthetic sockets и `runtime_acceptance=passed`.
 - [x] F04-T04 — Задавать hostname sandbox по app-id.
-  - Шаги: передавать в bubblewrap `--hostname isobox-<app-id>` в создаваемом UTS namespace; без app-id использовать `isobox`; ограничивать имя лимитом Linux в 64 байта.
-  - Приёмка: аргументы bwrap содержат hostname для запуска с/без app-id; hostname хоста не меняется.
+  - Шаги: передавать в bubblewrap `--hostname isobox-<app-id>` в создаваемом UTS namespace; без app-id использовать `isobox`; ограничивать имя лимитом Linux в 64 байта; сопоставлять `localhost` и sandbox hostname с loopback в `/etc/hosts`.
+  - Приёмка: аргументы bwrap содержат hostname для запуска с/без app-id; hostname хоста не меняется; оба имени разрешаются в `127.0.0.1` внутри sandbox.
 - [x] F04-T05 — Изолировать представление cgroup внутри sandbox.
   - Шаги: создавать cgroup namespace через `--unshare-cgroup`; подтвердить его доступность в rootless bwrap preflight; сохранять применение/проверку лимитов во внешнем host supervisor.
   - Приёмка: sandbox видит cgroup namespace; cgroup v2 limits проверяются host supervisor до открытия app gate; недоступный namespace блокирует запуск.
@@ -34,3 +34,6 @@
 - [x] F04-T08 — Хранить managed HOME в `~/.isobox/home/<app-id>/`.
   - Шаги: заменить временное хранилище на пользовательский каталог, переиспользовать HOME по app-id вне зависимости от профиля; сохранить приоритет явного `home_path`.
   - Приёмка: managed HOME имеет режим `0700`, сохраняется между запусками, общий для одного app-id в разных профилях и отдельный для разных app-id.
+- [x] F04-T09 — Настраивать sandbox UID/GID и account databases.
+  - Шаги: передавать выбранные guest UID и primary GID в bwrap; сопоставлять их эффективным UID/GID запускающего пользователя; собирать минимальные `/etc/passwd` и `/etc/group` из профиля без host account files.
+  - Приёмка: process UID и primary GID соответствуют профилю и сохраняют rootless host mapping; имя/HOME соответствуют `user`; первая группа основная, остальные только дополнительные account-записи; невалидный профиль блокирует launch.

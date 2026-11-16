@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,7 +43,7 @@ type pastaProcess struct {
 	tempDir  string
 }
 
-func startPasta(pastaPath string, namespacePID int, rules []profile.PortRule, mode profile.NetworkMode, dnsArgs []string, stdout, stderr io.Writer) (*pastaProcess, error) {
+func startPasta(pastaPath string, namespacePID int, rules []profile.PortRule, mode profile.NetworkMode, dnsArgs []string, stdout, stderr io.Writer, plans ...NetworkRuntime) (*pastaProcess, error) {
 	if pastaPath == "" {
 		return nil, fmt.Errorf("pasta executable is required for the selected network mode")
 	}
@@ -113,6 +114,23 @@ func startPasta(pastaPath string, namespacePID int, rules []profile.PortRule, mo
 		}
 	} else {
 		args = append(args, dnsArgs...)
+		if len(plans) != 0 {
+			plan := plans[0]
+			if plan.InterfaceName != "" && plan.InterfaceName != "tap0" {
+				args = append(args, "--ns-ifname="+plan.InterfaceName)
+			}
+			if plan.GuestAddress != "" {
+				prefix, err := netip.ParsePrefix(plan.Subnet)
+				if err != nil {
+					return nil, fmt.Errorf("parse selected sandbox subnet: %w", err)
+				}
+				args = append(args,
+					"--address="+plan.GuestAddress,
+					"--netmask="+strconv.Itoa(prefix.Bits()),
+					"--gateway="+plan.GatewayAddress,
+				)
+			}
+		}
 	}
 	args = append(args, strconv.Itoa(namespacePID))
 	command := exec.Command(pastaPath, args...)

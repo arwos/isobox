@@ -6,8 +6,11 @@
 package sandbox
 
 import (
+	"crypto/rand"
 	"fmt"
+	"math/big"
 	"net"
+	"net/netip"
 	"os"
 	"strings"
 
@@ -20,6 +23,11 @@ import (
 // bubblewrap builder and network-process supervisor.
 type NetworkRuntime struct {
 	Mode                profile.NetworkMode
+	InterfaceName       string
+	Subnet              string
+	GuestAddress        string
+	GatewayAddress      string
+	ResolverEndpoint    string
 	Backend             preflight.BackendKind
 	PortForwarder       preflight.BackendKind
 	Executable          string
@@ -46,7 +54,11 @@ func (runtime NetworkRuntime) activeBackend() preflight.BackendKind {
 
 // PrepareNetwork turns the preflight selection into the exact executable and
 // resolver configuration used by bwrap and the network backend.
-func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath string) (NetworkRuntime, error) {
+func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath string, configs ...profile.NetworkConfig) (NetworkRuntime, error) {
+	var config profile.NetworkConfig
+	if len(configs) != 0 {
+		config = configs[0]
+	}
 	runtime := NetworkRuntime{
 		Mode:                selection.Mode,
 		Backend:             selection.Network,
@@ -56,8 +68,54 @@ func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath s
 		ProxyAllowRules:     append([]profile.ProxyAllowRule(nil), selection.ProxyAllowRules...),
 		ResolverRecords:     append([]profile.ResolverRecord(nil), selection.ResolverRecords...),
 		FallbackReason:      selection.FallbackReason,
+		InterfaceName:       config.InterfaceName,
+		Subnet:              config.Subnet,
 	}
 	backend := runtime.activeBackend()
+	if backend == preflight.BackendProxyTUN {
+		runtime.GatewayAddress = "10.89.0.3"
+		runtime.ResolverEndpoint = proxy.TransparentDNSAddress
+		if runtime.InterfaceName == "" {
+			runtime.InterfaceName = proxyTUNName
+		}
+	} else if runtime.InterfaceName == "" {
+		runtime.InterfaceName = "tap0"
+	}
+	if config.Subnet != "" {
+		prefix, err := netip.ParsePrefix(config.Subnet)
+		if err != nil || !prefix.Addr().Is4() {
+			return NetworkRuntime{}, fmt.Errorf("invalid IPv4 sandbox subnet %q", config.Subnet)
+		}
+		prefix = prefix.Masked()
+		runtime.Subnet = prefix.String()
+		reserved := map[netip.Addr]struct{}{}
+		guest, err := randomUsableIPv4(prefix, reserved)
+		if err != nil {
+			return NetworkRuntime{}, err
+		}
+		runtime.GuestAddress = guest.String()
+		switch backend {
+		case preflight.BackendProxyTUN:
+			reserved[guest] = struct{}{}
+			resolver, err := randomUsableIPv4(prefix, reserved)
+			if err != nil {
+				return NetworkRuntime{}, fmt.Errorf("choose sandbox resolver endpoint: %w", err)
+			}
+			runtime.ResolverEndpoint = resolver.String()
+			reserved[resolver] = struct{}{}
+			gateway, err := randomUsableIPv4(prefix, reserved)
+			if err != nil {
+				return NetworkRuntime{}, fmt.Errorf("choose host gateway endpoint: %w", err)
+			}
+			runtime.GatewayAddress = gateway.String()
+		case preflight.BackendPasta:
+			gateway, err := randomUsableIPv4(prefix, map[netip.Addr]struct{}{guest: {}})
+			if err != nil {
+				return NetworkRuntime{}, fmt.Errorf("choose sandbox gateway: %w", err)
+			}
+			runtime.GatewayAddress = gateway.String()
+		}
+	}
 	switch backend {
 	case preflight.BackendNone:
 		return runtime, nil
@@ -81,7 +139,7 @@ func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath s
 					return NetworkRuntime{}, fmt.Errorf("read host DNS configuration for proxy mode: %w", readErr)
 				}
 			}
-			resolver, dnsAddresses, err := proxyResolvers(selection, hostResolver)
+			resolver, dnsAddresses, err := proxyResolvers(selection, hostResolver, runtime.ResolverEndpoint)
 			if err != nil {
 				return NetworkRuntime{}, err
 			}
@@ -100,7 +158,7 @@ func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath s
 					return NetworkRuntime{}, fmt.Errorf("egress upstream DNS %q is not an IPv4 address", value)
 				}
 				addressText := address.To4().String()
-				if addressText == proxy.TransparentDNSAddress {
+				if addressText == runtime.ResolverEndpoint {
 					return NetworkRuntime{}, fmt.Errorf("egress upstream DNS cannot point to the internal resolver endpoint")
 				}
 				runtime.ProxyDNSAddresses = append(runtime.ProxyDNSAddresses, addressText)
@@ -108,7 +166,7 @@ func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath s
 			if len(runtime.ProxyDNSAddresses) != 0 {
 				runtime.ProxyDNSAddress = runtime.ProxyDNSAddresses[0]
 			}
-			runtime.Resolver = []byte("nameserver " + proxy.TransparentDNSAddress + "\n")
+			runtime.Resolver = []byte("nameserver " + runtime.ResolverEndpoint + "\n")
 		}
 		if selection.PortForwarder == preflight.BackendPasta {
 			runtime.ForwarderExecutable = pastaPath
@@ -161,18 +219,32 @@ func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath s
 	return runtime, nil
 }
 
-func proxyResolver(selection preflight.BackendSelection, hostResolver []byte) ([]byte, string, error) {
-	resolver, addresses, err := proxyResolvers(selection, hostResolver)
-	if err != nil {
-		return nil, "", err
+func randomUsableIPv4(prefix netip.Prefix, reserved map[netip.Addr]struct{}) (netip.Addr, error) {
+	prefix = prefix.Masked()
+	base := prefix.Addr().As4()
+	baseValue := new(big.Int).SetBytes(base[:])
+	count := new(big.Int).Lsh(big.NewInt(1), uint(32-prefix.Bits()))
+	count.Sub(count, big.NewInt(2)) // Exclude network and broadcast addresses.
+	if count.Sign() <= 0 {
+		return netip.Addr{}, fmt.Errorf("subnet %s has no usable guest IPv4 address", prefix)
 	}
-	if len(addresses) == 0 {
-		return resolver, "", nil
+	first := new(big.Int).Add(baseValue, big.NewInt(1))
+	for attempt := 0; attempt < 256; attempt++ {
+		offset, err := rand.Int(rand.Reader, count)
+		if err != nil {
+			return netip.Addr{}, fmt.Errorf("choose random guest IPv4 address: %w", err)
+		}
+		candidateValue := new(big.Int).Add(first, offset)
+		bytes := candidateValue.FillBytes(make([]byte, 4))
+		candidate := netip.AddrFrom4([4]byte{bytes[0], bytes[1], bytes[2], bytes[3]})
+		if _, exists := reserved[candidate]; !exists {
+			return candidate, nil
+		}
 	}
-	return resolver, addresses[0], nil
+	return netip.Addr{}, fmt.Errorf("subnet %s contains no unreserved guest IPv4 address", prefix)
 }
 
-func proxyResolvers(selection preflight.BackendSelection, hostResolver []byte) ([]byte, []string, error) {
+func proxyResolvers(selection preflight.BackendSelection, hostResolver []byte, endpoints ...string) ([]byte, []string, error) {
 	addresses := selectedDNSAddresses(selection)
 	if selection.UseHostDNS || len(addresses) == 0 {
 		nameservers := hostIPv4Nameservers(string(hostResolver))
@@ -188,12 +260,20 @@ func proxyResolvers(selection preflight.BackendSelection, hostResolver []byte) (
 			return nil, nil, fmt.Errorf("proxy mode DNS server %q is not IPv4; IPv6 is disabled", addressText)
 		}
 		addressText = address.To4().String()
-		if addressText == proxy.TransparentDNSAddress {
+		endpoint := proxy.TransparentDNSAddress
+		if len(endpoints) != 0 && endpoints[0] != "" {
+			endpoint = endpoints[0]
+		}
+		if addressText == endpoint {
 			return nil, nil, fmt.Errorf("proxy mode DNS server cannot point to the internal resolver endpoint")
 		}
 		validated = append(validated, addressText)
 	}
-	return []byte("nameserver " + proxy.TransparentDNSAddress + "\n"), validated, nil
+	endpoint := proxy.TransparentDNSAddress
+	if len(endpoints) != 0 && endpoints[0] != "" {
+		endpoint = endpoints[0]
+	}
+	return []byte("nameserver " + endpoint + "\n"), validated, nil
 }
 
 func selectedDNSAddresses(selection preflight.BackendSelection) []string {

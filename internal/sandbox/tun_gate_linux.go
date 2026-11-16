@@ -33,7 +33,7 @@ func newProxyTUNStartupGate() (*proxyTUNStartupGate, error) {
 	return &proxyTUNStartupGate{offGuardStartupGate: gate}, nil
 }
 
-func (gate *proxyTUNStartupGate) WaitForTUN(hostNamespace uint64, processPID int) (int, *os.File, error) {
+func (gate *proxyTUNStartupGate) WaitForTUN(hostNamespace uint64, processPID int, tunNames ...string) (int, *os.File, error) {
 	if gate == nil || gate.listener == nil {
 		return 0, nil, fmt.Errorf("proxy TUN startup gate is unavailable")
 	}
@@ -71,7 +71,11 @@ func (gate *proxyTUNStartupGate) WaitForTUN(hostNamespace uint64, processPID int
 	}
 	descriptor := descriptors[0]
 	syscall.CloseOnExec(descriptor)
-	if err := verifyTUNDescriptor(descriptor); err != nil {
+	tunName := proxyTUNName
+	if len(tunNames) != 0 && tunNames[0] != "" {
+		tunName = tunNames[0]
+	}
+	if err := verifyTUNDescriptor(descriptor, tunName); err != nil {
 		_ = syscall.Close(descriptor)
 		return 0, nil, err
 	}
@@ -84,7 +88,7 @@ func (gate *proxyTUNStartupGate) WaitForTUN(hostNamespace uint64, processPID int
 		_ = syscall.Close(descriptor)
 		return 0, nil, fmt.Errorf("clear proxy TUN startup deadline: %w", err)
 	}
-	file := os.NewFile(uintptr(descriptor), filepath.Join("/dev/net", proxyTUNName))
+	file := os.NewFile(uintptr(descriptor), filepath.Join("/dev/net", tunName))
 	if file == nil {
 		_ = syscall.Close(descriptor)
 		return 0, nil, fmt.Errorf("wrap received proxy TUN descriptor")
@@ -179,14 +183,18 @@ func parseProxyTUNRights(control []byte) ([]int, error) {
 	return descriptors, nil
 }
 
-func verifyTUNDescriptor(descriptor int) error {
+func verifyTUNDescriptor(descriptor int, tunNames ...string) error {
+	tunName := proxyTUNName
+	if len(tunNames) != 0 && tunNames[0] != "" {
+		tunName = tunNames[0]
+	}
 	var request tunInterfaceRequest
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(descriptor), tunGetIFF, uintptr(unsafe.Pointer(&request)))
 	runtime.KeepAlive(&request)
 	if errno != 0 {
 		return fmt.Errorf("verify transferred TUN descriptor: %w", errno)
 	}
-	if string(request.name[:len(proxyTUNName)]) != proxyTUNName || request.flags&tunIFFTun == 0 || request.flags&tunIFFTap != 0 || request.flags&tunIFFNoPI == 0 {
+	if string(request.name[:len(tunName)]) != tunName || request.flags&tunIFFTun == 0 || request.flags&tunIFFTap != 0 || request.flags&tunIFFNoPI == 0 {
 		return fmt.Errorf("transferred descriptor is not the expected IPv4 TUN interface")
 	}
 	return nil

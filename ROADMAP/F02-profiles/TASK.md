@@ -31,3 +31,6 @@
 - [x] F02-T08 — Хранить профили в `~/.isobox/config/`.
   - Шаги: выбирать `<app-id>.unic` или `default.unic` из `~/.isobox/config/`, создавать приватные каталоги и не зависеть от `XDG_CONFIG_HOME`.
   - Приёмка: первый запуск создаёт `default.unic` с безопасной сетью `off`; app-specific профиль выбирается из того же каталога; каталог имеет режим `0700`, файл — `0600`.
+- [x] F02-T09 — Задавать sandbox account names и guest IDs.
+  - Шаги: добавить единственную запись `user UID NAME;` и повторяемые `group GID NAME;`; строго декодировать числовые ID и проверять имена/дубли.
+  - Приёмка: malformed, out-of-range и conflicting group entries отклоняются до preflight; первая группа остаётся primary.

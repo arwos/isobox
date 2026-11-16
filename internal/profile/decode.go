@@ -41,6 +41,21 @@ func DecodeProfile(data []byte) (Profile, error) {
 	if err := unic.Unmarshal(data, &profile); err != nil {
 		return Profile{}, fmt.Errorf("profile: %w", err)
 	}
+	if strings.Contains(profile.Network.InterfaceName, "/") && profile.Network.Subnet == "" {
+		profile.Network.Subnet = profile.Network.InterfaceName
+		profile.Network.InterfaceName = ""
+	}
+	user, err := decodeAccount(profile.UserArgs, "profile.user", false)
+	if err != nil {
+		return Profile{}, err
+	}
+	profile.User = user
+	profile.Groups, err = decodeAccounts(profile.GroupArgs, "profile.group")
+	if err != nil {
+		return Profile{}, err
+	}
+	profile.UserArgs = nil
+	profile.GroupArgs = nil
 	ports, err := decodePortValues(profile.Network.PortValues)
 	if err != nil {
 		return Profile{}, err
@@ -54,6 +69,75 @@ func DecodeProfile(data []byte) (Profile, error) {
 		return Profile{}, err
 	}
 	return profile, nil
+}
+
+func decodeAccounts(values []any, field string) ([]Account, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	entries, err := positionalEntries(values, field)
+	if err != nil {
+		return nil, err
+	}
+	accounts := make([]Account, 0, len(entries))
+	for index, entry := range entries {
+		account, err := decodeAccount(entry, fmt.Sprintf("%s[%d]", field, index), true)
+		if err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, account)
+	}
+	return accounts, nil
+}
+
+func decodeAccount(values []any, field string, required bool) (Account, error) {
+	if len(values) == 0 && !required {
+		return Account{}, nil
+	}
+	if len(values) != 2 {
+		return Account{}, fmt.Errorf("%s: expected numeric ID and account name", field)
+	}
+	id, err := accountID(values[0])
+	if err != nil {
+		return Account{}, fmt.Errorf("%s: invalid ID: %w", field, err)
+	}
+	name, ok := values[1].(string)
+	if !ok {
+		return Account{}, fmt.Errorf("%s: account name must be a string", field)
+	}
+	return Account{ID: id, Name: name}, nil
+}
+
+func positionalEntries(values []any, field string) ([][]any, error) {
+	if _, isTuple := values[0].([]any); isTuple {
+		entries := make([][]any, 0, len(values))
+		for _, value := range values {
+			entry, ok := value.([]any)
+			if !ok {
+				return nil, fmt.Errorf("%s: each entry must contain an ID and account name", field)
+			}
+			entries = append(entries, entry)
+		}
+		return entries, nil
+	}
+	return [][]any{values}, nil
+}
+
+func accountID(value any) (uint32, error) {
+	var text string
+	switch number := value.(type) {
+	case int64:
+		text = strconv.FormatInt(number, 10)
+	case string:
+		text = number
+	default:
+		return 0, fmt.Errorf("expected an integer from 0 to 4294967294")
+	}
+	parsed, err := strconv.ParseUint(text, 10, 32)
+	if err != nil || parsed > uint64(^uint32(0))-1 {
+		return 0, fmt.Errorf("expected an integer from 0 to 4294967294")
+	}
+	return uint32(parsed), nil
 }
 
 func decodeProxyPortRanges(rules []ProxyAllowRule) error {
@@ -219,6 +303,9 @@ func ValidateProfile(profile Profile) error {
 	if err := validateEnvironment(profile.Env); err != nil {
 		return err
 	}
+	if err := validateProfileAccounts(profile); err != nil {
+		return err
+	}
 	if len(profile.Command) > 0 && profile.Command[0] == "" {
 		return fmt.Errorf("profile.command[0]: executable cannot be empty")
 	}
@@ -269,6 +356,15 @@ func ValidateProfile(profile Profile) error {
 	if !validNetworkMode(profile.Network.Mode, true) {
 		return fmt.Errorf("profile.network.mode: invalid value %q; use off, direct, proxy, or egress", profile.Network.Mode)
 	}
+	if profile.Network.InterfaceName != "" && !validInterfaceName(profile.Network.InterfaceName) {
+		return fmt.Errorf("profile.network: invalid interface name %q; use 1-15 ASCII letters, digits, '.', '_' or '-'", profile.Network.InterfaceName)
+	}
+	if profile.Network.Subnet != "" {
+		prefix, err := netip.ParsePrefix(profile.Network.Subnet)
+		if err != nil || !prefix.Addr().Is4() || prefix.Bits() > 30 {
+			return fmt.Errorf("profile.network: subnet %q must be an IPv4 CIDR with at least four addresses", profile.Network.Subnet)
+		}
+	}
 	seenDNS := make(map[string]struct{}, len(profile.Network.DNS))
 	for index, address := range profile.Network.DNS {
 		field := fmt.Sprintf("profile.network.dns[%d]", index)
@@ -299,6 +395,45 @@ func ValidateProfile(profile Profile) error {
 		return err
 	}
 	return nil
+}
+
+func validateProfileAccounts(profile Profile) error {
+	if profile.User.Name != "" && !validAccountName(profile.User.Name) {
+		return fmt.Errorf("profile.user: invalid account name %q; use up to 32 lowercase ASCII letters, digits, '_' or '-', starting with a letter or '_'", profile.User.Name)
+	}
+	seenIDs := make(map[uint32]int, len(profile.Groups))
+	seenNames := make(map[string]int, len(profile.Groups))
+	for index, group := range profile.Groups {
+		field := fmt.Sprintf("profile.group[%d]", index)
+		if !validAccountName(group.Name) {
+			return fmt.Errorf("%s: invalid account name %q; use up to 32 lowercase ASCII letters, digits, '_' or '-', starting with a letter or '_'", field, group.Name)
+		}
+		if previous, exists := seenIDs[group.ID]; exists {
+			return fmt.Errorf("%s: duplicate group ID from profile.group[%d]", field, previous)
+		}
+		if previous, exists := seenNames[group.Name]; exists {
+			return fmt.Errorf("%s: duplicate group name from profile.group[%d]", field, previous)
+		}
+		seenIDs[group.ID] = index
+		seenNames[group.Name] = index
+	}
+	return nil
+}
+
+func validAccountName(name string) bool {
+	if len(name) == 0 || len(name) > 32 {
+		return false
+	}
+	for index, character := range name {
+		valid := character >= 'a' && character <= 'z' || character == '_'
+		if index > 0 {
+			valid = valid || character >= '0' && character <= '9' || character == '-'
+		}
+		if !valid {
+			return false
+		}
+	}
+	return true
 }
 
 func validateEnvironment(environment map[string]string) error {
@@ -370,6 +505,15 @@ func ResolveProfile(profile Profile, settings Settings) (EffectiveProfile, error
 			return EffectiveProfile{}, fmt.Errorf("profile.network.proxy_alias: required because the effective network mode is proxy")
 		}
 	}
+	if (profile.Network.InterfaceName != "" || profile.Network.Subnet != "") && mode == NetworkModeOff {
+		return EffectiveProfile{}, fmt.Errorf("profile.network: interface and subnet are only supported with network mode direct, proxy, or egress")
+	}
+	if profile.Network.Subnet != "" && (mode == NetworkModeProxy || mode == NetworkModeEgress) {
+		prefix, _ := netip.ParsePrefix(profile.Network.Subnet)
+		if prefix.Bits() > 29 {
+			return EffectiveProfile{}, fmt.Errorf("profile.network: subnet %q needs at least three usable IPv4 addresses for the sandbox, resolver, and host gateway", profile.Network.Subnet)
+		}
+	}
 	if mode != NetworkModeProxy && profile.Network.ProxyAlias != "" {
 		return EffectiveProfile{}, fmt.Errorf("profile.network.proxy_alias: only valid when the effective network mode is proxy")
 	}
@@ -385,6 +529,19 @@ func ResolveProfile(profile Profile, settings Settings) (EffectiveProfile, error
 		DNSServer:   dnsServer,
 		DNSServers:  dnsServers,
 	}, nil
+}
+
+func validInterfaceName(name string) bool {
+	if len(name) == 0 || len(name) > 15 || name == "." || name == ".." || name == "lo" {
+		return false
+	}
+	for _, character := range name {
+		valid := character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '.' || character == '_' || character == '-'
+		if !valid {
+			return false
+		}
+	}
+	return true
 }
 
 func profileType() reflect.Type { return reflect.TypeOf(Profile{}) }
@@ -499,6 +656,9 @@ func validateResolverRecords(records []ResolverRecord) error {
 		domain, err := NormalizeDomain(record.Domain)
 		if err != nil {
 			return fmt.Errorf("%s: %w", field, err)
+		}
+		if domain == "host.gateway.internal" {
+			return fmt.Errorf("%s: domain %q is reserved by isobox", field, domain)
 		}
 		if len(record.IPs) == 0 {
 			return fmt.Errorf("%s: at least one IPv4 ip is required", field)

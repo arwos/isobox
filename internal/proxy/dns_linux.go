@@ -15,8 +15,9 @@ import (
 	"net"
 	"time"
 
-	"github.com/arwos/isobox/internal/profile"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
+
+	"github.com/arwos/isobox/internal/profile"
 )
 
 const dnsExchangeTimeout = 5 * time.Second
@@ -29,7 +30,7 @@ type dnsQuestion struct {
 }
 
 func (tunnel *Tunnel) serveDNSUDP(local *gonet.UDPConn) {
-	defer local.Close()
+	defer func() { _ = local.Close() }()
 	stopClose := context.AfterFunc(tunnel.ctx, func() { _ = local.Close() })
 	defer stopClose()
 	buffer := make([]byte, 4096)
@@ -54,7 +55,7 @@ func (tunnel *Tunnel) serveDNSUDP(local *gonet.UDPConn) {
 }
 
 func (tunnel *Tunnel) serveDNSTCP(local net.Conn) {
-	defer local.Close()
+	defer func() { _ = local.Close() }()
 	stopClose := context.AfterFunc(tunnel.ctx, func() { _ = local.Close() })
 	defer stopClose()
 	for {
@@ -97,6 +98,14 @@ func (tunnel *Tunnel) resolveDNS(ctx context.Context, query []byte, tcpTransport
 	question, err := parseDNSQuestion(query)
 	if err != nil {
 		return nil, err
+	}
+	if tunnel.mode == profile.NetworkModeEgress && question.class == 1 && question.name == "host.gateway.internal" {
+		if question.type_ == 1 {
+			return staticAResponse(query, question, []net.IP{net.ParseIP(tunnel.hostGatewayEndpoint()).To4()}), nil
+		}
+		// The host gateway is IPv4-only. Answer other record types locally so
+		// libc's AAAA lookup does not escape to an upstream DNS server.
+		return staticEmptyResponse(query, question), nil
 	}
 	if question.class == 1 {
 		if addresses := tunnel.dnsRecords[question.name]; len(addresses) != 0 {
@@ -182,7 +191,7 @@ func (tunnel *Tunnel) exchangeDNSUDP(ctx context.Context, destination string, qu
 		if err != nil {
 			return nil, err
 		}
-		defer connection.Close()
+		defer func() { _ = connection.Close() }()
 		_ = connection.SetDeadline(time.Now().Add(dnsExchangeTimeout))
 		if _, err := connection.Write(query); err != nil {
 			return nil, err
@@ -198,7 +207,7 @@ func (tunnel *Tunnel) exchangeDNSUDP(ctx context.Context, destination string, qu
 	if err != nil {
 		return nil, err
 	}
-	defer association.Close()
+	defer func() { _ = association.Close() }()
 	if err := association.SendTo(destination, query); err != nil {
 		return nil, err
 	}
@@ -220,7 +229,7 @@ func (tunnel *Tunnel) exchangeDNSTCP(ctx context.Context, destination string, qu
 	if err != nil {
 		return nil, err
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	_ = connection.SetDeadline(time.Now().Add(dnsExchangeTimeout))
 	var size [2]byte
 	binary.BigEndian.PutUint16(size[:], uint16(len(query)))

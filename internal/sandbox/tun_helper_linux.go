@@ -82,7 +82,8 @@ func RunProxyTUNHelper(args []string) (int, bool) {
 		fmt.Fprintf(os.Stderr, "isobox: cannot enable loopback in the proxy network namespace: %v\n", err)
 		return 125, true
 	}
-	tunFile, err := configureProxyTUN(!ingressGuard)
+	interfaceName, address := proxyTUNConfig(args)
+	tunFile, err := configureProxyTUN(!ingressGuard, interfaceName, address)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "isobox: cannot configure the proxy TUN interface: %v\n", err)
 		return 125, true
@@ -93,7 +94,7 @@ func RunProxyTUNHelper(args []string) (int, bool) {
 			fmt.Fprintf(os.Stderr, "isobox: cannot pass firewall capability to nft: %v\n", err)
 			return 125, true
 		}
-		filterErr := installProxyIngressFilter(nftPath, tcpPorts, udpPorts)
+		filterErr := installProxyIngressFilter(nftPath, tcpPorts, udpPorts, interfaceName)
 		if err := clearAmbientCapabilities(); err != nil {
 			fmt.Fprintf(os.Stderr, "isobox: cannot clear inherited firewall capabilities after nft: %v\n", err)
 			return 125, true
@@ -136,7 +137,7 @@ func RunProxyTUNHelper(args []string) (int, bool) {
 			fmt.Fprintf(os.Stderr, "isobox: proxy ingress forwarding was not ready: %v\n", err)
 			return 125, true
 		}
-		if err := configureProxyIngressRouting(); err != nil {
+		if err := configureProxyIngressRouting(interfaceName); err != nil {
 			_, _ = io.WriteString(gate, "rejected\n")
 			fmt.Fprintf(os.Stderr, "isobox: cannot install the marked-only pasta return route: %v\n", err)
 			return 125, true
@@ -181,27 +182,71 @@ func parseProxyTUNHelperArgs(args []string) (bool, string, []string, []string, i
 	var nftPath string
 	var tcpPorts, udpPorts []string
 	ingressGuard := false
-	if args[index] == "--ingress-guard" {
-		if len(args) < 9 || !filepath.IsAbs(args[index+1]) {
+	for index < len(args) && args[index] != "--gate-path" {
+		switch args[index] {
+		case "--ingress-guard":
+			if ingressGuard || len(args) <= index+3 || !filepath.IsAbs(args[index+1]) {
+				return false, "", nil, nil, 0, false
+			}
+			var err error
+			tcpPorts, err = parsePortSet(args[index+2])
+			if err != nil {
+				return false, "", nil, nil, 0, false
+			}
+			udpPorts, err = parsePortSet(args[index+3])
+			if err != nil || len(tcpPorts) == 0 && len(udpPorts) == 0 {
+				return false, "", nil, nil, 0, false
+			}
+			ingressGuard = true
+			nftPath = args[index+1]
+			index += 4
+		case "--interface":
+			if len(args) <= index+1 || !validTUNInterfaceName(args[index+1]) {
+				return false, "", nil, nil, 0, false
+			}
+			index += 2
+		case "--address":
+			if len(args) <= index+1 {
+				return false, "", nil, nil, 0, false
+			}
+			if _, err := netlink.ParseAddr(args[index+1]); err != nil {
+				return false, "", nil, nil, 0, false
+			}
+			index += 2
+		default:
 			return false, "", nil, nil, 0, false
 		}
-		var err error
-		tcpPorts, err = parsePortSet(args[index+2])
-		if err != nil {
-			return false, "", nil, nil, 0, false
-		}
-		udpPorts, err = parsePortSet(args[index+3])
-		if err != nil || (len(tcpPorts) == 0 && len(udpPorts) == 0) {
-			return false, "", nil, nil, 0, false
-		}
-		ingressGuard = true
-		nftPath = args[index+1]
-		index += 4
 	}
 	if len(args) <= index+3 || args[index] != "--gate-path" || args[index+1] != internalProxyTUNGatePath || args[index+2] != "--" || args[index+3] == "" {
 		return false, "", nil, nil, 0, false
 	}
 	return ingressGuard, nftPath, tcpPorts, udpPorts, index + 3, true
+}
+
+func validTUNInterfaceName(name string) bool {
+	if len(name) == 0 || len(name) > 15 || name == "." || name == ".." || name == "lo" {
+		return false
+	}
+	for _, character := range name {
+		valid := character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '.' || character == '_' || character == '-'
+		if !valid {
+			return false
+		}
+	}
+	return true
+}
+
+func proxyTUNConfig(args []string) (string, string) {
+	name, address := proxyTUNName, proxyTUNAddress
+	for index := 1; index+1 < len(args) && args[index] != "--gate-path"; index++ {
+		switch args[index] {
+		case "--interface":
+			name = args[index+1]
+		case "--address":
+			address = args[index+1]
+		}
+	}
+	return name, address
 }
 
 func waitForProxyIngressReady(gate net.Conn) error {
@@ -301,7 +346,7 @@ func enableProxyLoopback() error {
 	return nil
 }
 
-func configureProxyTUN(installDefaultRoute bool) (*os.File, error) {
+func configureProxyTUN(installDefaultRoute bool, interfaceName, addressText string) (*os.File, error) {
 	device, err := os.OpenFile("/dev/net/tun", os.O_RDWR, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open /dev/net/tun: %w", err)
@@ -311,7 +356,7 @@ func configureProxyTUN(installDefaultRoute bool) (*os.File, error) {
 		return nil, fmt.Errorf("set /dev/net/tun nonblocking: %w", err)
 	}
 	var request tunInterfaceRequest
-	copy(request.name[:], proxyTUNName)
+	copy(request.name[:], interfaceName)
 	request.flags = tunIFFTun | tunIFFNoPI
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, device.Fd(), tunSetIFF, uintptr(unsafe.Pointer(&request)))
 	runtime.KeepAlive(&request)
@@ -326,21 +371,21 @@ func configureProxyTUN(installDefaultRoute bool) (*os.File, error) {
 		_ = device.Close()
 		return nil, fmt.Errorf("TUNGETIFF: %w", errno)
 	}
-	if string(observed.name[:len(proxyTUNName)]) != proxyTUNName || observed.flags&tunIFFTun == 0 || observed.flags&tunIFFTap != 0 || observed.flags&tunIFFNoPI == 0 {
+	if string(observed.name[:len(interfaceName)]) != interfaceName || observed.flags&tunIFFTun == 0 || observed.flags&tunIFFTap != 0 || observed.flags&tunIFFNoPI == 0 {
 		_ = device.Close()
 		return nil, fmt.Errorf("kernel returned an unexpected TUN interface identity or flags")
 	}
 
-	link, err := netlink.LinkByName(proxyTUNName)
+	link, err := netlink.LinkByName(interfaceName)
 	if err != nil {
 		_ = device.Close()
-		return nil, fmt.Errorf("find TUN interface %q: %w", proxyTUNName, err)
+		return nil, fmt.Errorf("find TUN interface %q: %w", interfaceName, err)
 	}
 	if err := netlink.LinkSetMTU(link, proxyTUNMTU); err != nil {
 		_ = device.Close()
 		return nil, fmt.Errorf("set TUN MTU: %w", err)
 	}
-	address, err := netlink.ParseAddr(proxyTUNAddress)
+	address, err := netlink.ParseAddr(addressText)
 	if err != nil {
 		_ = device.Close()
 		return nil, fmt.Errorf("parse internal TUN IPv4 address: %w", err)

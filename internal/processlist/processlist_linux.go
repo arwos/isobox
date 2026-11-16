@@ -63,7 +63,7 @@ func List() ([]Usage, error) {
 	if err != nil {
 		return nil, err
 	}
-	var entries []Entry
+	entries := make([]Entry, 0, len(files))
 	for _, path := range files {
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
@@ -185,6 +185,7 @@ func ensurePrivateDirectory(path string) error {
 	if info.Mode().Perm()&0o022 != 0 {
 		return fmt.Errorf("process registry directory %q is writable by another user or group", path)
 	}
+	// #nosec G302 -- directories need execute permission for owner-only traversal.
 	return os.Chmod(path, 0o700)
 }
 

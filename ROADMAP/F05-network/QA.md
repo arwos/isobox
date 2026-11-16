@@ -173,3 +173,11 @@ Acceptance harness теперь проверяет объявленный `::1` 
 - Вариант с `--interface=lo` остановился до `READY`: pasta не смогла открыть объявленный host listener `::1` (`Failed to bind port ... for option '-t ::1/...'`).
 - Варианты `--interface=tun0|wlp3s0 --ipv6-only` остановились до `READY` с `Couldn't switch to pasta namespaces: Operation not permitted`; `--outbound-if6=tun0|wlp3s0 --ipv6-only` — с `External interface not usable`.
 - Wrapper и тестовые каталоги были временными; host routes и интерфейсы не менялись. Ни одна из этих попыток не является IPv6 forwarding acceptance pass. Нужна среда, где pasta может настроить IPv6 namespace и host `::1` listener; external IPv6 проверки также требуют рабочего default route.
+
+## F05-T03 — Настраиваемая подсеть и имя интерфейса
+
+- Реализированы positional network attributes, валидация IPv4 CIDR/interface name, выбор случайного гостевого адреса и случайного pasta gateway, настройка TUN/pasta и отображение плана через `isobox config`.
+- Runtime acceptance не запускалась; настройки pasta и TUN требуют отдельного запуска на Linux host с доступными user/network namespaces и соответствующим backend. `F05-T03` остаётся `[~]` до такой приёмки.
+- `gofmt` по изменённым Go-файлам — прошло; `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — прошло. GVM вывел предупреждение, что stat cache в `/home/user/.gvm/.cache` недоступен для записи.
+- `git diff --check` — прошло.
+- Follow-up fix: with a configured proxy/egress subnet, guest, resolver, and host-gateway addresses are now distinct random addresses from that subnet; `/etc/hosts`, `resolv.conf`, and TUN policy consume the same values. Build and diff checks passed again; runtime acceptance is still pending.

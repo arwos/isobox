@@ -94,7 +94,7 @@ func RemoveSystemdUnit(appID string) (string, error) {
 	}
 	if err := runUserSystemctl(systemctl, "daemon-reload"); err != nil {
 		if restoreErr := writeSystemdUnitAtomically(directory, unitName, path, content); restoreErr != nil {
-			return "", fmt.Errorf("reload user systemd manager: %v; restore unit: %w", err, restoreErr)
+			return "", fmt.Errorf("reload user systemd manager: %w; restore unit: %w", err, restoreErr)
 		}
 		_ = runUserSystemctl(systemctl, "daemon-reload")
 		return "", fmt.Errorf("reload user systemd manager after removing unit: %w", err)

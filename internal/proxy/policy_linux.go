@@ -21,13 +21,15 @@ import (
 // TUNPolicy configures the proxy data plane. Egress mode uses host networking
 // directly and applies Allow before every outbound dial.
 type TUNPolicy struct {
-	Mode         profile.NetworkMode
-	AppID        string
-	ProxyAlias   string
-	DNSAddress   string
-	DNSAddresses []string
-	Allow        []profile.ProxyAllowRule
-	Records      []profile.ResolverRecord
+	Mode                profile.NetworkMode
+	AppID               string
+	ProxyAlias          string
+	ResolverEndpoint    string
+	HostGatewayEndpoint string
+	DNSAddress          string
+	DNSAddresses        []string
+	Allow               []profile.ProxyAllowRule
+	Records             []profile.ResolverRecord
 }
 
 type compiledAllowRule struct {
@@ -101,18 +103,17 @@ func (tunnel *Tunnel) destination(address net.IP, port uint16, protocol profile.
 		return "", fmt.Errorf("TUN destination must be IPv4 with a nonzero port")
 	}
 	ip := address.To4()
-	if ip.Equal(net.ParseIP(TransparentDNSAddress).To4()) && port == 53 {
+	if ip.Equal(net.ParseIP(tunnel.resolverEndpoint()).To4()) && port == 53 {
 		addresses := tunnel.configuredDNSAddresses()
 		if len(addresses) == 0 {
 			return "", fmt.Errorf("no upstream DNS configured")
 		}
 		return net.JoinHostPort(addresses[0].String(), "53"), nil
 	}
-	if ip.Equal(net.ParseIP(TransparentDNSAddress).To4()) {
+	if ip.Equal(net.ParseIP(tunnel.resolverEndpoint()).To4()) {
 		return "", fmt.Errorf("reserved resolver endpoint only accepts DNS on port 53")
 	}
-	const hostGateway = "10.89.0.3"
-	if ip.Equal(net.ParseIP(hostGateway).To4()) {
+	if ip.Equal(net.ParseIP(tunnel.hostGatewayEndpoint()).To4()) {
 		if tunnel.mode != profile.NetworkModeEgress || !tunnel.allowed(net.ParseIP("127.0.0.1"), port, protocol) {
 			tunnel.logBlocked(net.ParseIP("127.0.0.1"), port, protocol, "host gateway destination is not allowed")
 			return "", fmt.Errorf("host gateway access is not allowed")
@@ -124,6 +125,20 @@ func (tunnel *Tunnel) destination(address net.IP, port uint16, protocol profile.
 		return "", fmt.Errorf("destination %s:%d is not allowed", ip, port)
 	}
 	return net.JoinHostPort(ip.String(), strconv.Itoa(int(port))), nil
+}
+
+func (tunnel *Tunnel) resolverEndpoint() string {
+	if tunnel != nil && tunnel.dnsEndpoint != "" {
+		return tunnel.dnsEndpoint
+	}
+	return TransparentDNSAddress
+}
+
+func (tunnel *Tunnel) hostGatewayEndpoint() string {
+	if tunnel != nil && tunnel.gatewayEndpoint != "" {
+		return tunnel.gatewayEndpoint
+	}
+	return "10.89.0.3"
 }
 
 func (tunnel *Tunnel) configuredDNSAddresses() []net.IP {

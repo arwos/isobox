@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +21,6 @@ import (
 
 	"github.com/arwos/isobox/internal/limits"
 	"github.com/arwos/isobox/internal/profile"
-	"github.com/arwos/isobox/internal/proxy"
 )
 
 const sandboxPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -83,11 +83,14 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	if err := validateProfileMountTargets(profileMounts); err != nil {
 		return nil, err
 	}
-	if config.NetworkMode == profile.NetworkModeDirect || config.NetworkMode == profile.NetworkModeProxy || config.NetworkMode == profile.NetworkModeEgress {
-		for _, mount := range profileMounts {
+	for _, mount := range profileMounts {
+		if config.NetworkMode == profile.NetworkModeDirect || config.NetworkMode == profile.NetworkModeProxy || config.NetworkMode == profile.NetworkModeEgress {
 			if mountTargetsOverlap(mount.target, "/etc/resolv.conf") {
 				return nil, fmt.Errorf("profile mount target %q conflicts with the network DNS configuration", mount.target)
 			}
+		}
+		if mountTargetsOverlap(mount.target, "/etc/hosts") {
+			return nil, fmt.Errorf("profile mount target %q conflicts with the sandbox hosts entries", mount.target)
 		}
 	}
 	sortProfileMounts(profileMounts)
@@ -98,7 +101,12 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	proxyIngress := proxyNetwork && len(config.Network.Ports) != 0
 	ipv4Setup := directNetwork || config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) == 0
 	activeBackend := network.activeBackend()
-	args := []string{"--unshare-user"}
+	identity := sandboxIdentity(config.Profile, os.Geteuid(), os.Getegid())
+	args := []string{
+		"--unshare-user",
+		"--uid", strconv.FormatUint(uint64(identity.user.ID), 10),
+		"--gid", strconv.FormatUint(uint64(identity.groups[0].ID), 10),
+	}
 	// Policy TUN modes create their network namespace in the trusted helper, after
 	// bwrap has finished its user-namespace setup for --dev/devpts. That keeps
 	// CAP_NET_ADMIN in the user namespace that owns the network namespace.
@@ -132,6 +140,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		"--ro-bind-data", strconv.Itoa(accountFD), "/etc/passwd",
 		"--ro-bind-data", strconv.Itoa(accountFD+1), "/etc/group",
 	)
+	args = append(args, "--ro-bind-data", strconv.Itoa(accountFD+2), "/etc/hosts")
 	if directNetwork || proxyNetwork {
 		args = append(args, "--ro-bind-data", "3", "/etc/resolv.conf")
 	}
@@ -277,6 +286,13 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		}
 	} else if proxyNetwork {
 		args = append(args, internalSandboxBinaryPath, internalProxyTUNCommand)
+		if config.Network.InterfaceName != "" {
+			args = append(args, "--interface", network.InterfaceName)
+		}
+		if network.GuestAddress != "" {
+			prefix, _ := netip.ParsePrefix(network.Subnet)
+			args = append(args, "--address", network.GuestAddress+"/"+strconv.Itoa(prefix.Bits()))
+		}
 		if proxyIngress {
 			tcpPorts, udpPorts, err := firewallPortSets(config.Network.Ports)
 			if err != nil {
@@ -305,19 +321,37 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		}
 		command.ExtraFiles = append(command.ExtraFiles, resolverFile)
 	}
-	passwdFile, err := anonymousDataFile(sandboxPasswdContents(os.Geteuid(), os.Getegid()))
+	passwdFile, err := anonymousDataFile(sandboxPasswdContents(identity.user, identity.groups[0].ID))
 	if err != nil {
 		closeFiles(command.ExtraFiles)
 		return nil, fmt.Errorf("prepare sandbox passwd database: %w", err)
 	}
 	command.ExtraFiles = append(command.ExtraFiles, passwdFile)
-	groupFile, err := anonymousDataFile(sandboxGroupContents(os.Getegid()))
+	groupFile, err := anonymousDataFile(sandboxGroupContents(identity.user, identity.groups))
 	if err != nil {
 		closeFiles(command.ExtraFiles)
 		return nil, fmt.Errorf("prepare sandbox group database: %w", err)
 	}
 	command.ExtraFiles = append(command.ExtraFiles, groupFile)
+	hostsFile, err := anonymousDataFile(sandboxHostsContents(appID, config.NetworkMode == profile.NetworkModeEgress, network.GatewayAddress))
+	if err != nil {
+		closeFiles(command.ExtraFiles)
+		return nil, fmt.Errorf("prepare sandbox hosts database: %w", err)
+	}
+	command.ExtraFiles = append(command.ExtraFiles, hostsFile)
 	return command, nil
+}
+
+func sandboxHostsContents(appID string, includeHostGateway bool, gatewayAddresses ...string) []byte {
+	contents := fmt.Sprintf("127.0.0.1 localhost %s\n", sandboxHostname(appID))
+	if includeHostGateway {
+		gateway := "10.89.0.3"
+		if len(gatewayAddresses) != 0 && gatewayAddresses[0] != "" {
+			gateway = gatewayAddresses[0]
+		}
+		contents += gateway + " host.gateway.internal\n"
+	}
+	return []byte(contents)
 }
 
 func closeFiles(files []*os.File) {
@@ -326,25 +360,55 @@ func closeFiles(files []*os.File) {
 	}
 }
 
-func sandboxPasswdContents(uid, gid int) []byte {
-	entries := []string{
-		fmt.Sprintf("isobox:x:%d:%d:isobox:%s:/bin/sh", uid, gid, sandboxHome),
+type sandboxAccountIdentity struct {
+	user   profile.Account
+	groups []profile.Account
+}
+
+func sandboxIdentity(config profile.Profile, hostUID, hostGID int) sandboxAccountIdentity {
+	user := config.User
+	if user.Name == "" {
+		user = profile.Account{ID: uint32(hostUID), Name: "isobox"}
 	}
-	if uid != 0 {
+	groups := append([]profile.Account(nil), config.Groups...)
+	if len(groups) == 0 {
+		groups = []profile.Account{{ID: uint32(hostGID), Name: "isobox"}}
+	}
+	return sandboxAccountIdentity{user: user, groups: groups}
+}
+
+func sandboxPasswdContents(user profile.Account, gid uint32) []byte {
+	entries := []string{
+		fmt.Sprintf("%s:x:%d:%d:%s:%s:/bin/sh", user.Name, user.ID, gid, user.Name, sandboxHome),
+	}
+	if user.ID != 0 && user.Name != "root" {
 		entries = append(entries, "root:x:0:0:root:/root:/bin/sh")
 	}
-	if uid != 65534 {
+	if user.ID != 65534 && user.Name != "nobody" {
 		entries = append(entries, "nobody:x:65534:65534:nobody:/nonexistent:/bin/false")
 	}
 	return []byte(strings.Join(entries, "\n") + "\n")
 }
 
-func sandboxGroupContents(gid int) []byte {
-	entries := []string{fmt.Sprintf("isobox:x:%d:", gid)}
-	if gid != 0 {
+func sandboxGroupContents(user profile.Account, groups []profile.Account) []byte {
+	entries := make([]string, 0, len(groups)+2)
+	for index, group := range groups {
+		members := ""
+		if index > 0 {
+			members = user.Name
+		}
+		entries = append(entries, fmt.Sprintf("%s:x:%d:%s", group.Name, group.ID, members))
+	}
+	rootID, noGroupID := uint32(0), uint32(65534)
+	hasRoot, hasNoGroup := false, false
+	for _, group := range groups {
+		hasRoot = hasRoot || group.ID == rootID || group.Name == "root"
+		hasNoGroup = hasNoGroup || group.ID == noGroupID || group.Name == "nogroup"
+	}
+	if !hasRoot {
 		entries = append(entries, "root:x:0:")
 	}
-	if gid != 65534 {
+	if !hasNoGroup {
 		entries = append(entries, "nogroup:x:65534:")
 	}
 	return []byte(strings.Join(entries, "\n") + "\n")
@@ -382,7 +446,7 @@ func validateSupportedProfile(config profile.EffectiveProfile, network NetworkRu
 		if network.activeBackend() != "proxy-tun" {
 			return fmt.Errorf("network mode %q requires the selected policy TUN backend", config.NetworkMode)
 		}
-		if string(network.Resolver) != "nameserver "+proxy.TransparentDNSAddress+"\n" {
+		if string(network.Resolver) != "nameserver "+network.ResolverEndpoint+"\n" {
 			return fmt.Errorf("network mode %q requires the internal DNS endpoint routed through the TUN", config.NetworkMode)
 		}
 		if config.NetworkMode == profile.NetworkModeProxy {

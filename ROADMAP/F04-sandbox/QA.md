@@ -14,8 +14,10 @@
 - Проверить, что isobox не вызывает portal API; при explicit session-bus grant портал может быть доступен приложению как обычный session-bus service.
 - Проверить аргументы, exit status, сигнализацию и cleanup после завершения приложения.
 - Проверить bwrap hostname `isobox-<app-id>`, hostname `isobox` без app-id и предел длины для app-id максимальной длины.
+- Проверить, что в каждом сетевом режиме `localhost` и фактический sandbox hostname изолированно разрешаются в `127.0.0.1`; профильный mount на `/etc/hosts` отклоняется.
 - Проверить, что rootless preflight подтверждает `--unshare-cgroup`, а cgroup лимиты по-прежнему видны host supervisor до открытия app gate.
 - Проверить, что `getcwd()` и `PWD` приложения равны `/home/isobox`.
+- С профилем `user 12345 alice; group 23456 app; group 34567 video;` проверить `id -u`, `id -g`, `whoami`, passwd/group entries и host-side ownership разрешённого writable mount; дополнительные GID не должны описываться как process credentials.
 
 ## Выполнение
 
@@ -72,3 +74,7 @@ F04-T06: bwrap устанавливает cwd и `PWD` в `/home/isobox`; accept
 F04-T07: host passwd/group mounts заменены минимальными read-only account files; эффективные UID/GID сохраняются, пользователь назван `isobox`, HOME в passwd — `/home/isobox`. `gofmt`, `go build ./...` и `git diff --check` прошли; Go сообщил о read-only GVM stat cache, сборка завершилась с кодом 0. Runtime-приёмка не запускалась.
 
 F04-T08: managed HOME перенесён в `~/.isobox/home/<app-id>/`; acceptance runner обновлён, чтобы проверять persistence по app-id и чистить только свои уникальные тестовые каталоги. `go build ./...` и `git diff --check` прошли; runtime runner не запускался.
+
+F04-T09: bwrap получает профильные `--uid`/`--gid`, а account files формируются из выбранных записей; дополнительные группы записываются в `/etc/group`, но не задаются как дополнительные credentials. `gofmt`, `go build ./...` и `git diff --check` прошли; Go сообщил о невозможности записи stat cache в read-only `/home/user/.gvm/.cache`, сборка завершилась с кодом 0. Runtime-приёмка не запускалась.
+
+Hosts: во всех режимах sandbox `/etc/hosts` сопоставляет `localhost` и UTS hostname с `127.0.0.1`. `gofmt`, `go build ./...` и `git diff --check` прошли; DNS/runtime-проверки не запускались.

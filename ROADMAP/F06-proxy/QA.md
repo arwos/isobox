@@ -20,6 +20,7 @@
 - Статические DNS A-записи отвечаются встроенным resolver; неизвестные имена идут только на явно заданный `network.dns`, иначе получают отказ. Проверить UDP и TCP DNS, несколько A-адресов, нормализацию имени и IPv6 AAAA поведение.
 - Upstream DNS нельзя использовать вне allowlist; разрешение UDP/53 не должно случайно разрешать произвольный TCP egress или наоборот, если протокол задан явно.
 - Host gateway destination достигает host service, слушающий только host loopback, лишь с явным правилом; обычный sandbox `127.0.0.1` остаётся локальным. Проверить доступ к открытому сервису с разрешённым правилом и его блокировку без правила.
+- Во всех сетевых режимах проверить, что `/etc/hosts` сопоставляет `localhost` и UTS hostname sandbox с `127.0.0.1`; в egress дополнительно проверить, что `host.gateway.internal` совпадает с gateway из `isobox config` (по умолчанию `10.89.0.3`). Профильный mount на `/etc/hosts` отклоняется до запуска.
 - Проверить, что явный IP не обходит allowlist, незаданное правило блокирует IP literal, host/local адреса требуют явного разрешения, а отказ resolver, TUN policy или dial не создаёт альтернативный маршрут.
 - `proxy` с обязательным `proxy_alias` сохраняет SOCKS5 CONNECT/UDP ASSOCIATE и старый fallback resolver; явно заданные allow rules ограничивают его потоки. `direct` и `off` не меняют поведение.
 - До runtime acceptance проверить profile/config table, IPv4-only инварианты, profile validation и отказ до старта приложения при некорректной policy.
@@ -44,6 +45,8 @@
 - `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go vet ./...` — прошло.
 - `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — exit 0. GVM вывел предупреждение о недоступном stat cache в read-only `/home/user/.gvm/.cache`; на результат сборки это не повлияло.
 - `git diff --check` — без замечаний.
+
+Для hosts entries: sandbox создаёт приватный `/etc/hosts` с `localhost` и UTS hostname, а egress дополнительно получает host gateway entry; профильный mount, перекрывающий этот файл, приводит к ошибке. `gofmt`, `go build ./...` и `git diff --check` прошли; Go сообщил о невозможности записи stat cache в read-only `/home/user/.gvm/.cache`, сборка завершилась с кодом 0. Runtime acceptance не запускалась.
 
 Не проверялось: чтение файла под отдельным UID вручную и полная интерактивная установка credentials в пользовательской TTY. Тесты проверяют owner/mode, отказ другим правам и фактическое отключение/восстановление ECHO через pseudo-terminal. SOCKS handshake, сетевой runtime и sing-box fixture относятся к F06-T02/T03/T04.
 
@@ -173,3 +176,5 @@ Runner проверяет TCP CONNECT, UDP ASSOCIATE, неверный паро�
 
 - `tunnel_linux_test.go` переведён на актуальный `Tunnel.destination(net.IP, port, protocol)`; TCP/UDP cases передают соответствующий протокол.
 - `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go test -run '^TestIPv4Destination$' ./internal/proxy` — прошло; компиляция пакета успешна.
+
+Follow-up for `host.gateway.internal`: egress DNS returns the configured virtual gateway for A queries and local NODATA for other record types, preventing AAAA fallback lookups from reaching upstream DNS. The reserved name cannot be overridden by profile records. `go build ./...` and `git diff --check` passed; runtime DNS acceptance remains pending.
