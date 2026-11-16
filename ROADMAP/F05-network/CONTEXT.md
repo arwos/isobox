@@ -30,3 +30,9 @@
 - Direct runtime fallback между pasta/slirp проверяет только заранее подтверждённо совместимые IPv4 профили. IPv6 DNS и host forwarding отклоняются валидацией профиля.
 - Runtime сравнение pasta/slirp для IPv4 и off-mode firewall/ingress acceptance подтверждены. IPv6 sysctl применяется внутри netns, отсутствие IPv6 адресов проверено live на pasta, slirp, fallback и off. Если sysctl нельзя изменить/проверить, helper не запускает приложение; если pasta не поддерживает `--ipv4-only`, preflight завершает direct/off+ports fail-closed.
 - Дополнительный источник для startup gate и capabilities: [bubblewrap manual](https://github.com/containers/bubblewrap/blob/main/bwrap.xml).
+
+## F05-T03 — Приёмка на Linux host
+
+- `network <interface> <IPv4 CIDR>` задаёт значения независимо: интерфейс-only сохраняет backend-адресацию, CIDR-only сохраняет выбранное backend-имя интерфейса. Если задан CIDR, каждый запуск выбирает адреса заново из его usable host-части; это не постоянная аренда.
+- Для `direct` custom CIDR требует совместимого pasta, потому что slirp назначает собственный адрес. Для `proxy` и `egress` guest, resolver и host-gateway addresses выбираются различными адресами из CIDR; все сгенерированные адреса должны передаваться согласованно в интерфейс, hosts/resolver и policy.
+- Live acceptance подтвердила custom network для трёх режимов с обычным UID. Runtime команды и полученные адреса перечислены в `QA.md`; временный SOCKS mock применялся только для readiness handshake proxy mode и завершался после проверки.

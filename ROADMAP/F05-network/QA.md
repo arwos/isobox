@@ -176,8 +176,11 @@ Acceptance harness теперь проверяет объявленный `::1` 
 
 ## F05-T03 — Настраиваемая подсеть и имя интерфейса
 
-- Реализированы positional network attributes, валидация IPv4 CIDR/interface name, выбор случайного гостевого адреса и случайного pasta gateway, настройка TUN/pasta и отображение плана через `isobox config`.
-- Runtime acceptance не запускалась; настройки pasta и TUN требуют отдельного запуска на Linux host с доступными user/network namespaces и соответствующим backend. `F05-T03` остаётся `[~]` до такой приёмки.
-- `gofmt` по изменённым Go-файлам — прошло; `GOCACHE=/tmp/isobox-gocache GOMODCACHE=/tmp/isobox-gomodcache GOPATH=/tmp/isobox-gopath go build ./...` — прошло. GVM вывел предупреждение, что stat cache в `/home/user/.gvm/.cache` недоступен для записи.
-- `git diff --check` — прошло.
-- Follow-up fix: with a configured proxy/egress subnet, guest, resolver, and host-gateway addresses are now distinct random addresses from that subnet; `/etc/hosts`, `resolv.conf`, and TUN policy consume the same values. Build and diff checks passed again; runtime acceptance is still pending.
+- Go binary build to `/tmp/isobox-f05-t03.Bs4UpQ/isobox` — passed. GVM printed a read-only stat-cache warning; build exited 0.
+- `isobox config` for `network lncustom 192.0.2.0/29 { mode direct; }` — passed and displayed the selected interface, guest address, and a distinct gateway.
+- Live `direct` run with both attributes — passed; `ip -4 addr show dev lncustom` reported `192.0.2.6/29`. Interface-only profile — passed with `lncheck` and `192.168.103.160/20`. CIDR-only profile — passed with `192.0.2.2/29` and the backend-selected interface name. The reported address was within the requested usable host range in each case.
+- Live `proxy` run — passed with `pxcustom` and `192.0.2.1/29`; the temporary local SOCKS5 server accepted readiness and UDP-associate setup, without forwarding application traffic.
+- Live `egress` run — passed with `egcustom` and `198.51.100.2/29`. `isobox config` separately showed guest `198.51.100.5`, gateway `198.51.100.4`, and resolver `198.51.100.1` for its own plan; these endpoints were distinct and within the configured subnet.
+- Profile preflight rejected `network ln0 192.0.2.0/29 { mode off; }`, an IPv6 CIDR, and an overlong interface name with exit status 2 before a sandbox command could run.
+- The runtime checks used rootless bwrap/network namespaces with temporary profiles and directories under `/tmp`. No host network configuration was changed; the SOCKS mock process and sandbox processes were stopped by the command cleanup.
+- `python3 -m py_compile tests/f05-network/profile-validation/validate_profiles.py` and `git diff --check` — passed. No Go test suite was run.
