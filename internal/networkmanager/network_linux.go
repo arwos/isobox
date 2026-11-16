@@ -28,8 +28,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/arwos/isobox/internal/integration"
 	"github.com/vishvananda/netlink"
+
+	"github.com/arwos/isobox/internal/integration"
 )
 
 const (
@@ -119,7 +120,7 @@ func Create(name, subnet string) (Network, error) {
 	if err != nil {
 		removeErr := os.Remove(path)
 		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			return Network{}, fmt.Errorf("create network manager: %w; remove incomplete configuration: %v", err, removeErr)
+			return Network{}, fmt.Errorf("create network manager: %w; remove incomplete configuration: %w", err, removeErr)
 		}
 		return Network{}, err
 	}
@@ -225,7 +226,7 @@ func StartManager(path string) error {
 	if err := requireOrdinaryUser(); err != nil {
 		return err
 	}
-	cfg, _, err := readConfigByPath(path)
+	cfg, err := readConfigByPath(path)
 	if err != nil {
 		return err
 	}
@@ -265,7 +266,7 @@ func RunManagerWorker(path string) error {
 	if err := requireChildUserNamespace(); err != nil {
 		return err
 	}
-	cfg, _, err := readConfigByPath(path)
+	cfg, err := readConfigByPath(path)
 	if err != nil {
 		return err
 	}
@@ -276,7 +277,7 @@ func RunManagerWorker(path string) error {
 	if err != nil {
 		return err
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -289,6 +290,9 @@ func RunManagerWorker(path string) error {
 	case <-ctx.Done():
 		return nil
 	case err := <-serveErr:
+		if ctx.Err() != nil {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -336,7 +340,7 @@ func serveControl(ctx context.Context, listener *net.UnixListener, cfg networkCo
 		connection, err := listener.AcceptUnix()
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil
+				return err
 			}
 			var networkError net.Error
 			if errors.As(err, &networkError) && networkError.Timeout() {
@@ -403,7 +407,7 @@ func queryManager(path string) (managerStatus, error) {
 	if err != nil {
 		return managerStatus{}, err
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	_ = connection.SetDeadline(time.Now().Add(3 * time.Second))
 	if err := json.NewEncoder(connection).Encode(controlRequest{Operation: managerStatusQuery}); err != nil {
 		return managerStatus{}, err
@@ -459,7 +463,7 @@ func notifySystemd(message string) error {
 	if err != nil {
 		return err
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	_, err = connection.Write([]byte(message))
 	return err
 }
@@ -612,6 +616,7 @@ func ensurePrivateDirectory(path string, create bool) error {
 		return fmt.Errorf("%q must be a real directory owned by the current user", path)
 	}
 	if info.Mode().Perm() != 0o700 {
+		// #nosec G302 -- directories need execute permission for owner-only traversal.
 		if err := os.Chmod(path, 0o700); err != nil {
 			return fmt.Errorf("set directory mode to 0700: %w", err)
 		}
@@ -635,7 +640,7 @@ func writeConfigExclusive(path string, cfg networkConfig) error {
 		return err
 	}
 	temporary := file.Name()
-	defer os.Remove(temporary)
+	defer func() { _ = os.Remove(temporary) }()
 	if err := file.Chmod(0o600); err != nil {
 		_ = file.Close()
 		return err
@@ -679,20 +684,21 @@ func readConfig(name string) (networkConfig, netip.Prefix, error) {
 	return readConfigFile(path, name)
 }
 
-func readConfigByPath(path string) (networkConfig, netip.Prefix, error) {
+func readConfigByPath(path string) (networkConfig, error) {
 	if !filepath.IsAbs(path) {
-		return networkConfig{}, netip.Prefix{}, fmt.Errorf("network configuration path must be absolute")
+		return networkConfig{}, fmt.Errorf("network configuration path must be absolute")
 	}
 	path = filepath.Clean(path)
 	name := strings.TrimSuffix(filepath.Base(path), ".json")
 	expected, err := configPath(name, false)
 	if err != nil {
-		return networkConfig{}, netip.Prefix{}, err
+		return networkConfig{}, err
 	}
 	if path != expected {
-		return networkConfig{}, netip.Prefix{}, fmt.Errorf("network configuration must be stored inside ~/.isobox/networks")
+		return networkConfig{}, fmt.Errorf("network configuration must be stored inside ~/.isobox/networks")
 	}
-	return readConfigFile(path, name)
+	cfg, _, err := readConfigFile(path, name)
+	return cfg, err
 }
 
 func readConfigFile(path, name string) (networkConfig, netip.Prefix, error) {
