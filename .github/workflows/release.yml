@@ -1,0 +1,82 @@
+name: Release binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.26.8"
+
+jobs:
+  build:
+    name: linux-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch:
+          - amd64
+          - arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build binary and archive
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -eu
+          name="isobox-${GOOS}-${GOARCH}"
+          package="release/package"
+          mkdir -p "${package}" release
+          go build -trimpath -ldflags="-s -w" -o "${package}/isobox" ./cmd/isobox
+          cp LICENSE README.md "${package}/"
+          tar -czf "release/${name}.tar.gz" -C "${package}" .
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: isobox-linux-${{ matrix.goarch }}
+          path: release/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Create draft GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          pattern: isobox-linux-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: release
+        run: sha256sum *.tar.gz > SHA256SUMS
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: true
+          files: |
+            release/*.tar.gz
+            release/SHA256SUMS
+          fail_on_unmatched_files: true
