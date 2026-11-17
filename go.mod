@@ -3,9 +3,9 @@ module github.com/arwos/isobox
 go 1.26.8
 
 require (
-	github.com/vishvananda/netlink v1.3.1-0.20250303224720-0e7078ed04c8
+	github.com/vishvananda/netlink v1.3.1
 	go.osspkg.com/unic v1.0.2
-	golang.org/x/sys v0.43.0
+	golang.org/x/sys v0.50.0
 	gvisor.dev/gvisor v0.0.0-20260701204157-69c2d17aea96
 )
 
