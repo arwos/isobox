@@ -10,7 +10,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"path/filepath"
 	"text/tabwriter"
 
 	"github.com/arwos/isobox/internal/networkmanager"
@@ -39,29 +38,21 @@ func executeNetwork(args []string, stdout, stderr io.Writer) int {
 	case "remove":
 		return executeRemoveNetwork(args[1:], stdout, stderr)
 	case "__manager":
-		path, err := parseNetworkManagerArgs("isobox network __manager", args[1:])
-		if err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				return 0
-			}
-			_, _ = fmt.Fprintf(stderr, "isobox network manager: %v\n", err)
+		if len(args) != 1 {
+			_, _ = fmt.Fprintln(stderr, "isobox network manager: internal command takes no arguments")
 			return 2
 		}
-		if err := networkmanager.StartManager(path); err != nil {
+		if err := networkmanager.StartManager(""); err != nil {
 			_, _ = fmt.Fprintf(stderr, "isobox network manager: %v\n", err)
 			return 1
 		}
 		return 0
 	case "__manager-worker":
-		path, err := parseNetworkManagerArgs("isobox network __manager-worker", args[1:])
-		if err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				return 0
-			}
-			_, _ = fmt.Fprintf(stderr, "isobox network manager worker: %v\n", err)
+		if len(args) != 1 {
+			_, _ = fmt.Fprintln(stderr, "isobox network manager worker: internal command takes no arguments")
 			return 2
 		}
-		if err := networkmanager.RunManagerWorker(path); err != nil {
+		if err := networkmanager.RunManagerWorker(""); err != nil {
 			_, _ = fmt.Fprintf(stderr, "isobox network manager worker: %v\n", err)
 			return 1
 		}
@@ -141,18 +132,4 @@ func executeRemoveNetwork(args []string, stdout, stderr io.Writer) int {
 	}
 	_, _ = fmt.Fprintf(stdout, "Removed network %s\n", name)
 	return 0
-}
-
-func parseNetworkManagerArgs(commandName string, args []string) (string, error) {
-	flags := flag.NewFlagSet(commandName, flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	var path string
-	flags.StringVar(&path, "config", "", "managed network configuration path")
-	if err := flags.Parse(args); err != nil {
-		return "", err
-	}
-	if flags.NArg() != 0 || path == "" || !filepath.IsAbs(path) {
-		return "", fmt.Errorf("--config must be an absolute path and positional arguments are not accepted")
-	}
-	return path, nil
 }

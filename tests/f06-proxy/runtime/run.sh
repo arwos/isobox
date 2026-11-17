@@ -172,7 +172,7 @@ for name in names:
         address = socket.inet_ntoa(response[20:24])
     except (OSError, UnicodeEncodeError):
         continue
-    if address.startswith("127.") or address.startswith("10.89.0.") or address.startswith("10.89.1.") or address == "0.0.0.0":
+    if address.startswith("127.") or address.startswith("10.123.123.") or address.startswith("10.89.1.") or address == "0.0.0.0":
         continue
     print(address)
     break

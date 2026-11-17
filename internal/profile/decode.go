@@ -356,6 +356,9 @@ func ValidateProfile(profile Profile) error {
 	if !validNetworkMode(profile.Network.Mode, true) {
 		return fmt.Errorf("profile.network.mode: invalid value %q; use off, direct, proxy, or egress", profile.Network.Mode)
 	}
+	if err := validateNetworkGroups(profile.Network.Groups, profile.Network.Aliases); err != nil {
+		return err
+	}
 	if profile.Network.InterfaceName != "" && !validInterfaceName(profile.Network.InterfaceName) {
 		return fmt.Errorf("profile.network: invalid interface name %q; use 1-15 ASCII letters, digits, '.', '_' or '-'", profile.Network.InterfaceName)
 	}
@@ -395,6 +398,50 @@ func ValidateProfile(profile Profile) error {
 		return err
 	}
 	return nil
+}
+
+func validateNetworkGroups(groups, aliases []string) error {
+	if len(groups) > 16 {
+		return fmt.Errorf("profile.network.group: at most 16 groups may be selected")
+	}
+	seenGroups := make(map[string]int, len(groups))
+	for index, name := range groups {
+		if !validNetworkGroupName(name) {
+			return fmt.Errorf("profile.network.group[%d]: invalid network name %q", index, name)
+		}
+		if previous, exists := seenGroups[name]; exists {
+			return fmt.Errorf("profile.network.group[%d]: duplicates profile.network.group[%d]", index, previous)
+		}
+		seenGroups[name] = index
+	}
+	seenAliases := make(map[string]int, len(aliases))
+	for index, value := range aliases {
+		name, err := NormalizeDomain(value)
+		if err != nil {
+			return fmt.Errorf("profile.network.alias[%d]: %w", index, err)
+		}
+		if previous, exists := seenAliases[name]; exists {
+			return fmt.Errorf("profile.network.alias[%d]: duplicates profile.network.alias[%d]", index, previous)
+		}
+		seenAliases[name] = index
+	}
+	return nil
+}
+
+func validNetworkGroupName(name string) bool {
+	if name == "" || len(name) > 63 {
+		return false
+	}
+	for index, character := range name {
+		valid := character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9'
+		if index > 0 {
+			valid = valid || character == '_' || character == '-'
+		}
+		if !valid {
+			return false
+		}
+	}
+	return true
 }
 
 func validateProfileAccounts(profile Profile) error {

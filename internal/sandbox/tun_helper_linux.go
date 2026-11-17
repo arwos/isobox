@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,11 +23,15 @@ import (
 	"unsafe"
 
 	"github.com/vishvananda/netlink"
+
+	"github.com/arwos/isobox/internal/networkmanager"
+	"github.com/arwos/isobox/internal/profile"
+	"github.com/arwos/isobox/internal/proxy"
 )
 
 const (
 	proxyTUNName    = "isobox0"
-	proxyTUNAddress = "10.89.0.1/24"
+	proxyTUNAddress = "10.123.123.1/24"
 	proxyTUNMTU     = 1500
 	tunSetIFF       = uintptr(0x400454ca)
 	tunGetIFF       = uintptr(0x800454d2)
@@ -34,6 +39,121 @@ const (
 	tunIFFTap       = uint16(0x0002)
 	tunIFFNoPI      = uint16(0x1000)
 )
+
+// ConfigureSharedTUN creates a policy TUN in an already manager-owned member
+// namespace. Its descriptor is handed to the outer isobox process, which owns
+// the data plane and can make external connections through the host network.
+func ConfigureSharedTUN(network *NetworkRuntime) (*os.File, networkmanager.MemberTUNInfo, error) {
+	if network == nil || !network.SharedNamespace || network.Mode != profile.NetworkModeProxy && network.Mode != profile.NetworkModeEgress {
+		return nil, networkmanager.MemberTUNInfo{}, fmt.Errorf("shared policy TUN requires a grouped proxy or egress runtime")
+	}
+	if network.Subnet == "" {
+		prefix, err := sharedTUNPrefix(network.GroupSubnets)
+		if err != nil {
+			return nil, networkmanager.MemberTUNInfo{}, err
+		}
+		network.Subnet = prefix.String()
+		network.GuestAddress = prefix.Addr().Next().String()
+		network.ResolverEndpoint = prefix.Addr().Next().Next().String()
+		network.GatewayAddress = prefix.Addr().Next().Next().Next().String()
+		network.Resolver = []byte("nameserver " + network.ResolverEndpoint + "\n")
+	}
+	if err := disableIPv6InNamespace(); err != nil {
+		return nil, networkmanager.MemberTUNInfo{}, fmt.Errorf("disable IPv6 before shared policy TUN setup: %w", err)
+	}
+	if err := verifyNoIPv6EgressRoutes(); err != nil {
+		return nil, networkmanager.MemberTUNInfo{}, fmt.Errorf("unexpected IPv6 routes in shared policy namespace: %w", err)
+	}
+	address := proxyTUNAddress
+	if network.GuestAddress != "" {
+		prefix, err := netip.ParsePrefix(network.Subnet)
+		if err != nil {
+			return nil, networkmanager.MemberTUNInfo{}, fmt.Errorf("parse shared TUN subnet: %w", err)
+		}
+		address = network.GuestAddress + "/" + strconv.Itoa(prefix.Bits())
+	}
+	tunFile, err := configureProxyTUN(true, network.InterfaceName, address)
+	if err != nil {
+		return nil, networkmanager.MemberTUNInfo{}, fmt.Errorf("configure shared policy TUN: %w", err)
+	}
+	return tunFile, networkmanager.MemberTUNInfo{
+		InterfaceName: network.InterfaceName, Subnet: network.Subnet,
+		GuestAddress: network.GuestAddress, ResolverEndpoint: network.ResolverEndpoint,
+		HostGatewayEndpoint: network.GatewayAddress,
+	}, nil
+}
+
+// StartSharedTUNDataPlane starts a grouped policy TUN in the caller's network
+// namespace using the descriptor configured by ConfigureSharedTUN.
+func StartSharedTUNDataPlane(tunFile *os.File, network NetworkRuntime, info networkmanager.MemberTUNInfo, appID string) (*proxy.Tunnel, error) {
+	if tunFile == nil || !network.SharedNamespace || network.Mode != profile.NetworkModeProxy && network.Mode != profile.NetworkModeEgress {
+		if tunFile != nil {
+			_ = tunFile.Close()
+		}
+		return nil, fmt.Errorf("shared policy TUN data plane requires a grouped proxy or egress runtime")
+	}
+	prefix, err := netip.ParsePrefix(info.Subnet)
+	if err != nil || !prefix.Addr().Is4() || info.InterfaceName != proxyTUNName {
+		_ = tunFile.Close()
+		return nil, fmt.Errorf("grouped policy TUN handoff contains invalid interface or subnet data")
+	}
+	prefix = prefix.Masked()
+	for _, value := range []string{info.GuestAddress, info.ResolverEndpoint, info.HostGatewayEndpoint} {
+		address, parseErr := netip.ParseAddr(value)
+		if parseErr != nil || !address.Is4() || !prefix.Contains(address) {
+			_ = tunFile.Close()
+			return nil, fmt.Errorf("grouped policy TUN endpoint %q is outside subnet %s", value, prefix)
+		}
+	}
+	return proxy.StartTUNTunnelWithPolicy(tunFile, proxy.TUNPolicy{
+		Mode: network.Mode, AppID: appID, ProxyAlias: network.ProxyAlias,
+		DNSAddress: network.ProxyDNSAddress, DNSAddresses: network.ProxyDNSAddresses,
+		ResolverEndpoint: info.ResolverEndpoint, HostGatewayEndpoint: info.HostGatewayEndpoint,
+		Allow: network.ProxyAllowRules, Records: network.ResolverRecords,
+	})
+}
+
+func sharedTUNPrefix(groupSubnets []string) (netip.Prefix, error) {
+	groups := make([]netip.Prefix, 0, len(groupSubnets))
+	for _, value := range groupSubnets {
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil || !prefix.Addr().Is4() {
+			return netip.Prefix{}, fmt.Errorf("invalid grouped IPv4 subnet %q for policy TUN", value)
+		}
+		groups = append(groups, prefix.Masked())
+	}
+	usable := func(candidate netip.Prefix) bool {
+		for _, group := range groups {
+			if candidate.Overlaps(group) {
+				return false
+			}
+		}
+		return true
+	}
+	for second := 89; second <= 255; second++ {
+		for third := 0; third <= 255; third++ {
+			candidate := netip.PrefixFrom(netip.AddrFrom4([4]byte{10, byte(second), byte(third), 0}), 24)
+			if usable(candidate) {
+				return candidate, nil
+			}
+		}
+	}
+	for second := 16; second <= 31; second++ {
+		for third := 0; third <= 255; third++ {
+			candidate := netip.PrefixFrom(netip.AddrFrom4([4]byte{172, byte(second), byte(third), 0}), 24)
+			if usable(candidate) {
+				return candidate, nil
+			}
+		}
+	}
+	for third := 0; third <= 255; third++ {
+		candidate := netip.PrefixFrom(netip.AddrFrom4([4]byte{192, 168, byte(third), 0}), 24)
+		if usable(candidate) {
+			return candidate, nil
+		}
+	}
+	return netip.Prefix{}, fmt.Errorf("cannot select a policy TUN subnet that does not overlap a joined group")
+}
 
 type tunInterfaceRequest struct {
 	name  [16]byte

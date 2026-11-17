@@ -16,24 +16,21 @@ import (
 	"strings"
 )
 
-// NetworkManagerUnitOptions describes the persistent user service for a
-// rootless bridge network.
+// NetworkManagerUnitOptions identifies a network managed by the shared
+// rootless user service.
 type NetworkManagerUnitOptions struct {
-	Name       string
-	ConfigPath string
+	Name string
 }
 
 var networkUnitNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
+
+const sharedNetworkManagerUnitName = "isobox-network-manager.service"
 
 // InstallAndStartNetworkManager installs, enables, and starts an isobox-owned
 // manager unit. The unit uses Type=notify, so success means the bridge and its
 // control socket are ready.
 func InstallAndStartNetworkManager(options NetworkManagerUnitOptions) (string, error) {
 	unitName, err := networkManagerUnitName(options.Name)
-	if err != nil {
-		return "", err
-	}
-	configPath, err := resolveOwnedNetworkConfig(options.ConfigPath)
 	if err != nil {
 		return "", err
 	}
@@ -49,13 +46,9 @@ func InstallAndStartNetworkManager(options NetworkManagerUnitOptions) (string, e
 	if err != nil {
 		return "", fmt.Errorf("encode isobox path for systemd: %w", err)
 	}
-	configArgument, err := systemdExecArgument("--config=" + configPath)
-	if err != nil {
-		return "", fmt.Errorf("encode network configuration path for systemd: %w", err)
-	}
 	content := []byte(fmt.Sprintf(
-		"%s\n[Unit]\nDescription=Isobox network %s\n\n[Service]\nType=notify\nNotifyAccess=all\nExecStart=%s network __manager %s\nRestart=on-failure\nRestartSec=2s\nTimeoutStartSec=30s\nTimeoutStopSec=15s\nKillMode=control-group\n\n[Install]\nWantedBy=default.target\n",
-		managedSystemdUnitMarker, options.Name, executableArgument, configArgument,
+		"%s\n[Unit]\nDescription=Isobox rootless network manager\n\n[Service]\nType=notify\nNotifyAccess=all\nExecStart=%s network __manager\nRestart=on-failure\nRestartSec=2s\nTimeoutStartSec=30s\nTimeoutStopSec=15s\nKillMode=control-group\n\n[Install]\nWantedBy=default.target\n",
+		managedSystemdUnitMarker, executableArgument,
 	))
 
 	directory, err := systemdUserUnitDirectory()
@@ -66,10 +59,29 @@ func InstallAndStartNetworkManager(options NetworkManagerUnitOptions) (string, e
 		return "", err
 	}
 	path := filepath.Join(directory, unitName)
-	if _, existed, err := readManagedSystemdUnit(path, true); err != nil {
+	if existing, existed, err := readManagedSystemdUnit(path, true); err != nil {
 		return "", err
 	} else if existed {
-		return "", fmt.Errorf("user service %q already exists", unitName)
+		if string(existing) != string(content) {
+			return "", fmt.Errorf("user service %q is managed by isobox with an incompatible command", unitName)
+		}
+		systemctl, err := userSystemctlPath()
+		if err != nil {
+			return "", err
+		}
+		if err := requireUserSystemdManager(systemctl); err != nil {
+			return "", err
+		}
+		if err := runUserSystemctl(systemctl, "daemon-reload"); err != nil {
+			return "", fmt.Errorf("reload user systemd manager: %w", err)
+		}
+		if err := runUserSystemctl(systemctl, "enable", unitName); err != nil {
+			return "", fmt.Errorf("enable network manager service %q: %w", unitName, err)
+		}
+		if err := runUserSystemctl(systemctl, "start", unitName); err != nil {
+			return "", fmt.Errorf("start network manager service %q: %w", unitName, err)
+		}
+		return path, nil
 	}
 	systemctl, err := userSystemctlPath()
 	if err != nil {
@@ -195,7 +207,7 @@ func networkManagerUnitName(name string) (string, error) {
 	if !networkUnitNamePattern.MatchString(name) {
 		return "", fmt.Errorf("network name must start with an ASCII letter or digit and contain only letters, digits, '_' or '-' (maximum 63 characters)")
 	}
-	return "isobox-network-" + name + ".service", nil
+	return sharedNetworkManagerUnitName, nil
 }
 
 func requireUserSystemdManager(systemctl string) error {
@@ -203,19 +215,4 @@ func requireUserSystemdManager(systemctl string) error {
 		return fmt.Errorf("user systemd manager is unavailable: %w", err)
 	}
 	return nil
-}
-
-func resolveOwnedNetworkConfig(path string) (string, error) {
-	if path == "" || !filepath.IsAbs(path) {
-		return "", fmt.Errorf("network configuration path must be absolute")
-	}
-	path = filepath.Clean(path)
-	info, err := os.Lstat(path)
-	if err != nil {
-		return "", fmt.Errorf("inspect network configuration %q: %w", path, err)
-	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || !ownedByCurrentUser(info) || info.Mode().Perm() != 0o600 {
-		return "", fmt.Errorf("network configuration %q must be an owned regular file with mode 0600", path)
-	}
-	return path, nil
 }

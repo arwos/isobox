@@ -66,6 +66,8 @@ type NetworkConfig struct {
 	// A CIDR may be supplied as the first attribute without an interface name.
 	InterfaceName string      `unic:"interface,attr=1"`
 	Subnet        string      `unic:"subnet,attr=2"`
+	Groups        []string    `unic:"group,omitempty"`
+	Aliases       []string    `unic:"alias,omitempty"`
 	Mode          NetworkMode `unic:"mode,omitempty"`
 	DNS           []string    `unic:"dns,omitempty"`
 	ProxyAlias    string      `unic:"proxy_alias,omitempty"`

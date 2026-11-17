@@ -53,9 +53,9 @@ func TestTunnelRedirectsSyntheticDNSAddressToConfiguredResolver(t *testing.T) {
 		protocol profile.PortProtocol
 		want     string
 	}{
-		{name: "UDP DNS", address: net.ParseIP("10.89.0.2"), port: 53, protocol: profile.PortProtocolUDP, want: "127.0.0.53:53"},
-		{name: "TCP DNS", address: net.ParseIP("10.89.0.2"), port: 53, protocol: profile.PortProtocolTCP, want: "127.0.0.53:53"},
-		{name: "other port", address: net.ParseIP("10.89.0.2"), port: 443, protocol: profile.PortProtocolUDP, want: "10.89.0.2:443"},
+		{name: "UDP DNS", address: net.ParseIP("10.123.123.2"), port: 53, protocol: profile.PortProtocolUDP, want: "127.0.0.53:53"},
+		{name: "TCP DNS", address: net.ParseIP("10.123.123.2"), port: 53, protocol: profile.PortProtocolTCP, want: "127.0.0.53:53"},
+		{name: "other port", address: net.ParseIP("10.123.123.2"), port: 443, protocol: profile.PortProtocolUDP, want: "10.123.123.2:443"},
 		{name: "other address", address: net.ParseIP("192.0.2.53"), port: 53, protocol: profile.PortProtocolUDP, want: "192.0.2.53:53"},
 	}
 	for _, test := range tests {

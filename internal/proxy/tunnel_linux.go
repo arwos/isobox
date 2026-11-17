@@ -41,7 +41,7 @@ const (
 	tunnelProbeTimeout     = 12 * time.Second
 	tunnelUDPBufferLength  = 65507
 	// TransparentDNSAddress is routed into the TUN and mapped to dnsAddress.
-	TransparentDNSAddress = "10.89.0.2"
+	TransparentDNSAddress = "10.123.123.2"
 )
 
 // Tunnel owns the IPv4-only user-space stack attached to tunFile. Credentials
@@ -114,7 +114,7 @@ func StartTUNTunnelWithPolicy(tunFile *os.File, policy TUNPolicy) (*Tunnel, erro
 	}
 	gatewayEndpoint := policy.HostGatewayEndpoint
 	if gatewayEndpoint == "" {
-		gatewayEndpoint = "10.89.0.3"
+		gatewayEndpoint = "10.123.123.3"
 	}
 	if net.ParseIP(dnsEndpoint) == nil || net.ParseIP(dnsEndpoint).To4() == nil || net.ParseIP(gatewayEndpoint) == nil || net.ParseIP(gatewayEndpoint).To4() == nil || dnsEndpoint == gatewayEndpoint {
 		_ = tunFile.Close()

@@ -99,9 +99,13 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	directNetwork := config.NetworkMode == profile.NetworkModeDirect
 	proxyNetwork := config.NetworkMode == profile.NetworkModeProxy || config.NetworkMode == profile.NetworkModeEgress
 	proxyIngress := proxyNetwork && len(config.Network.Ports) != 0
-	ipv4Setup := directNetwork || config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) == 0
+	ipv4Setup := !network.SharedNamespace && (directNetwork || config.NetworkMode == profile.NetworkModeOff && len(config.Network.Ports) == 0)
 	activeBackend := network.activeBackend()
-	identity := sandboxIdentity(config.Profile, os.Geteuid(), os.Getegid())
+	hostUID, hostGID := os.Geteuid(), os.Getegid()
+	if network.HasHostIdentity {
+		hostUID, hostGID = network.HostUID, network.HostGID
+	}
+	identity := sandboxIdentity(config.Profile, hostUID, hostGID)
 	args := []string{
 		"--unshare-user",
 		"--uid", strconv.FormatUint(uint64(identity.user.ID), 10),
@@ -113,7 +117,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	// The helper installs namespace-blocking seccomp before app exec.
 	// The off-mode guard creates its netns after bwrap mounts too, because /dev
 	// setup can change the user namespace that should own the network namespace.
-	if !offGuard && !proxyNetwork {
+	if network.SharedNamespace || !offGuard && !proxyNetwork {
 		args = append(args, "--disable-userns", "--assert-userns-disabled")
 	}
 	args = append(args,
@@ -125,7 +129,9 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		"--new-session",
 		"--die-with-parent",
 	)
-	if !offGuard && !ipv4Setup && !proxyNetwork {
+	if network.SharedNamespace {
+		args = append(args, "--share-net")
+	} else if !offGuard && !ipv4Setup && !proxyNetwork {
 		args = append(args, "--unshare-net")
 	}
 	args = append(args, "--dir", "/etc")
@@ -133,7 +139,8 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		args = append(args, "--ro-bind", mount.source, mount.destination)
 	}
 	accountFD := 3
-	if directNetwork || proxyNetwork {
+	resolverConfigured := directNetwork || proxyNetwork || network.SharedNamespace
+	if resolverConfigured {
 		accountFD++ // fd 3 contains the sandbox resolver.
 	}
 	args = append(args,
@@ -141,7 +148,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		"--ro-bind-data", strconv.Itoa(accountFD+1), "/etc/group",
 	)
 	args = append(args, "--ro-bind-data", strconv.Itoa(accountFD+2), "/etc/hosts")
-	if directNetwork || proxyNetwork {
+	if resolverConfigured {
 		args = append(args, "--ro-bind-data", "3", "/etc/resolv.conf")
 	}
 	args = append(args,
@@ -197,7 +204,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		// value is removed by the helper before it execs the application.
 		args = append(args, "--setenv", "GOMAXPROCS", "1")
 	}
-	if proxyNetwork {
+	if proxyNetwork && !network.SharedNamespace {
 		args = append(args, "--setenv", "GOMAXPROCS", "1")
 	}
 	if ipv4Setup {
@@ -259,6 +266,9 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 	if !offGuard && !proxyNetwork && ((!ipv4Setup && activeBackend != "none") || limits.Any(config.Limits)) {
 		args = append(args, "--block-fd", "3")
 	}
+	if network.SharedTunnel && limits.Any(config.Limits) {
+		args = append(args, "--block-fd", "3")
+	}
 	args = append(args,
 		"--unsetenv", "PWD",
 		"--chdir", sandboxHome,
@@ -284,7 +294,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		} else {
 			args = append(args, internalSandboxBinaryPath, internalIPv4NetworkCommand, "--")
 		}
-	} else if proxyNetwork {
+	} else if proxyNetwork && !network.SharedNamespace {
 		args = append(args, internalSandboxBinaryPath, internalProxyTUNCommand)
 		if config.Network.InterfaceName != "" {
 			args = append(args, "--interface", network.InterfaceName)
@@ -309,13 +319,17 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 		args = append(args, "--gate-path", internalProxyTUNGatePath, "--", application[0])
 		args = append(args, application[1:]...)
 	}
-	if !proxyNetwork {
+	if !proxyNetwork || network.SharedNamespace {
 		args = append(args, application...)
 	}
 
 	command := exec.Command(bubblewrap, args...)
-	if directNetwork || proxyNetwork {
-		resolverFile, err := anonymousDataFile(network.Resolver)
+	if resolverConfigured {
+		resolver := network.Resolver
+		if network.SharedNamespace {
+			resolver = []byte("nameserver 127.0.0.1\noptions timeout:2 attempts:2\n")
+		}
+		resolverFile, err := anonymousDataFile(resolver)
 		if err != nil {
 			return nil, fmt.Errorf("prepare sandbox DNS configuration: %w", err)
 		}
@@ -345,7 +359,7 @@ func BuildCommand(bubblewrap, nftPath string, config profile.EffectiveProfile, p
 func sandboxHostsContents(appID string, includeHostGateway bool, gatewayAddresses ...string) []byte {
 	contents := fmt.Sprintf("127.0.0.1 localhost %s\n", sandboxHostname(appID))
 	if includeHostGateway {
-		gateway := "10.89.0.3"
+		gateway := "10.123.123.3"
 		if len(gatewayAddresses) != 0 && gatewayAddresses[0] != "" {
 			gateway = gatewayAddresses[0]
 		}

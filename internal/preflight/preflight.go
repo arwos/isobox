@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,12 +73,26 @@ var pastaOptionProbes = []optionProbe{
 // is started. It accumulates independent failures so one run can report the
 // full set of host changes the user needs to make.
 func Check(config profile.EffectiveProfile) (Capabilities, error) {
+	return check(config, false)
+}
+
+// CheckInRootlessUserNamespace is used only by grouped launches started by the
+// rootless network manager. The current process must be UID 0 mapped to the
+// ordinary host user; host-root execution remains rejected.
+func CheckInRootlessUserNamespace(config profile.EffectiveProfile) (Capabilities, error) {
+	if !isMappedRootlessUser() {
+		return Capabilities{}, fmt.Errorf("grouped launch preflight requires the manager's rootless user namespace")
+	}
+	return check(config, true)
+}
+
+func check(config profile.EffectiveProfile, allowMappedRoot bool) (Capabilities, error) {
 	var capabilities Capabilities
 	var issues []string
 	if runtime.GOOS != "linux" {
 		return capabilities, fmt.Errorf("host preflight failed:\n- isobox requires Linux; current operating system is %s", runtime.GOOS)
 	}
-	if os.Geteuid() == 0 {
+	if os.Geteuid() == 0 && !allowMappedRoot {
 		issues = append(issues, "isobox must run as an ordinary unprivileged user; do not launch it as root")
 	}
 
@@ -198,6 +213,24 @@ func Check(config profile.EffectiveProfile) (Capabilities, error) {
 		return capabilities, fmt.Errorf("%s", message.String())
 	}
 	return capabilities, nil
+}
+
+func isMappedRootlessUser() bool {
+	if os.Geteuid() != 0 {
+		return false
+	}
+	data, err := os.ReadFile("/proc/self/uid_map")
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) != 3 {
+		return false
+	}
+	inside, errInside := strconv.Atoi(fields[0])
+	outside, errOutside := strconv.Atoi(fields[1])
+	count, errCount := strconv.Atoi(fields[2])
+	return errInside == nil && errOutside == nil && errCount == nil && inside == 0 && outside > 0 && count == 1
 }
 
 func bubblewrapFailureAdvice(err error) string {

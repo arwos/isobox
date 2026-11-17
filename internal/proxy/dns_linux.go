@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"time"
 
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -27,6 +28,40 @@ type dnsQuestion struct {
 	type_ uint16
 	class uint16
 	end   int
+}
+
+// StaticDNSResponse creates an authoritative A/AAAA response for group DNS
+// records. Unknown names return NXDOMAIN so they are not forwarded elsewhere.
+func StaticDNSResponse(query []byte, records map[string][]net.IP) ([]byte, bool, error) {
+	question, err := parseDNSQuestion(query)
+	if err != nil {
+		return nil, false, err
+	}
+	if question.class != 1 {
+		return nxdomainDNSResponse(query, question), false, nil
+	}
+	addresses, exists := records[question.name]
+	if !exists {
+		return nxdomainDNSResponse(query, question), false, nil
+	}
+	switch question.type_ {
+	case 1:
+		return staticAResponse(query, question, addresses), true, nil
+	case 28:
+		return staticEmptyResponse(query, question), true, nil
+	default:
+		return nxdomainDNSResponse(query, question), true, nil
+	}
+}
+
+// IsSingleLabelDNSQuery reports whether a valid query asks for a name without
+// a dot, such as an app-id or alias published by a network group.
+func IsSingleLabelDNSQuery(query []byte) (bool, error) {
+	question, err := parseDNSQuestion(query)
+	if err != nil {
+		return false, err
+	}
+	return !strings.Contains(question.name, "."), nil
 }
 
 func (tunnel *Tunnel) serveDNSUDP(local *gonet.UDPConn) {
@@ -353,14 +388,33 @@ func staticEmptyResponse(query []byte, question dnsQuestion) []byte {
 	return response
 }
 
+func nxdomainDNSResponse(query []byte, question dnsQuestion) []byte {
+	response := make([]byte, 12+question.end-12)
+	copy(response[:2], query[:2])
+	flags := binary.BigEndian.Uint16(query[2:4])&0x0100 | 0x8403
+	binary.BigEndian.PutUint16(response[2:4], flags)
+	binary.BigEndian.PutUint16(response[4:6], 1)
+	copy(response[12:], query[12:question.end])
+	return response
+}
+
 func refusedDNSResponse(query []byte) ([]byte, error) {
+	return dnsErrorResponse(query, 5)
+}
+
+// ServerFailureDNSResponse returns a DNS SERVFAIL response for a valid query.
+func ServerFailureDNSResponse(query []byte) ([]byte, error) {
+	return dnsErrorResponse(query, 2)
+}
+
+func dnsErrorResponse(query []byte, rcode uint16) ([]byte, error) {
 	question, err := parseDNSQuestion(query)
 	if err != nil {
 		return nil, err
 	}
 	response := make([]byte, 12+question.end-12)
 	copy(response[:2], query[:2])
-	flags := binary.BigEndian.Uint16(query[2:4])&0x0100 | 0x8005
+	flags := binary.BigEndian.Uint16(query[2:4])&0x0100 | 0x8000 | rcode
 	binary.BigEndian.PutUint16(response[2:4], flags)
 	binary.BigEndian.PutUint16(response[4:6], 1)
 	copy(response[12:], query[12:question.end])

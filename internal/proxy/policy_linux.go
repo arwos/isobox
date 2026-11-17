@@ -138,7 +138,7 @@ func (tunnel *Tunnel) hostGatewayEndpoint() string {
 	if tunnel != nil && tunnel.gatewayEndpoint != "" {
 		return tunnel.gatewayEndpoint
 	}
-	return "10.89.0.3"
+	return "10.123.123.3"
 }
 
 func (tunnel *Tunnel) configuredDNSAddresses() []net.IP {

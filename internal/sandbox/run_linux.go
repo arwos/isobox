@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/arwos/isobox/internal/limits"
+	"github.com/arwos/isobox/internal/networkmanager"
 	"github.com/arwos/isobox/internal/processlist"
 	"github.com/arwos/isobox/internal/profile"
 	"github.com/arwos/isobox/internal/proxy"
@@ -72,6 +73,34 @@ type proxyTUNProcess struct {
 	once      sync.Once
 	mu        sync.Mutex
 	waitErr   error
+}
+
+type sharedDirectBackend struct {
+	process managedNetworkProcess
+}
+
+func (process *sharedDirectBackend) Done() <-chan struct{} { return process.process.doneChannel() }
+
+func (process *sharedDirectBackend) Err() error { return process.process.error() }
+
+func (process *sharedDirectBackend) Close() error {
+	process.process.stop()
+	return nil
+}
+
+// StartSharedDirectBackend starts pasta/slirp from the outer launcher, which
+// remains in the host network namespace while targeting the manager-owned
+// member namespace.
+func StartSharedDirectBackend(network NetworkRuntime, info networkmanager.MemberTUNInfo) (networkmanager.MemberTunnel, error) {
+	if network.Mode != profile.NetworkModeDirect || !network.SharedNamespace || info.BackendNamespacePID <= 0 {
+		return nil, fmt.Errorf("shared direct backend requires a grouped direct runtime and namespace holder")
+	}
+	network.BackendNamespacePID = info.BackendNamespacePID
+	process, err := setupNetworkBackendWithFallback(&network, info.BackendNamespacePID, nil, os.Stdout, os.Stderr, startNetworkBackend)
+	if err != nil {
+		return nil, fmt.Errorf("start direct network backend: %w", err)
+	}
+	return &sharedDirectBackend{process: process}, nil
 }
 
 func newProxyTUNProcess(tunnel *proxy.Tunnel, forwarder managedNetworkProcess) *proxyTUNProcess {
@@ -165,7 +194,7 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 	}
 	proxyTUN := network != nil && (network.Mode == profile.NetworkModeProxy || network.Mode == profile.NetworkModeEgress)
 	proxyIngress := proxyTUN && len(rules) != 0
-	lateNetworkNamespace := network != nil && (network.Mode == profile.NetworkModeDirect || proxyTUN || network.Mode == profile.NetworkModeOff && len(rules) != 0)
+	lateNetworkNamespace := network != nil && !network.SharedNamespace && (network.Mode == profile.NetworkModeDirect || proxyTUN || network.Mode == profile.NetworkModeOff && len(rules) != 0)
 	bootstrapTaskSlack := uint64(0)
 	if network != nil && (network.Mode == profile.NetworkModeOff && len(rules) != 0 || proxyIngress) {
 		bootstrapTaskSlack = limits.OffGuardBootstrapSlack(requested)
@@ -329,7 +358,14 @@ func run(command *exec.Cmd, network *NetworkRuntime, rules []profile.PortRule, r
 				applicationPID := childPID
 				if network != nil && forwarder == nil {
 					networkPID := childPID
-					if proxyTUN {
+					if network.SharedNamespace && network.Mode == profile.NetworkModeDirect {
+						if network.BackendNamespacePID <= 0 {
+							err = fmt.Errorf("grouped direct network has no manager-owned namespace holder")
+						}
+					}
+					if proxyTUN && network.SharedNamespace {
+						err = fmt.Errorf("grouped %s policy TUN must be supervised by the outer isobox launcher", network.Mode)
+					} else if proxyTUN {
 						var tunFile *os.File
 						networkPID, tunFile, err = proxyGate.WaitForTUN(hostNetworkNamespace, childPID, network.InterfaceName)
 						applicationPID = networkPID
@@ -725,8 +761,14 @@ func terminateLaunch(command *exec.Cmd, childPID int) {
 func startNetworkBackend(network NetworkRuntime, namespacePID int, rules []profile.PortRule, stdout, stderr io.Writer) (managedNetworkProcess, error) {
 	switch network.activeBackend() {
 	case "pasta":
+		if network.SharedNamespace && network.Mode == profile.NetworkModeDirect {
+			namespacePID = network.BackendNamespacePID
+		}
 		return startPasta(network.Executable, namespacePID, rules, network.Mode, network.PastaDNSArgs, stdout, stderr, network)
 	case "slirp4netns":
+		if network.SharedNamespace && network.Mode == profile.NetworkModeDirect {
+			namespacePID = network.BackendNamespacePID
+		}
 		return startSlirp(network.Executable, namespacePID, rules, stdout, stderr)
 	default:
 		return nil, fmt.Errorf("unsupported network backend %q", network.activeBackend())

@@ -133,7 +133,7 @@ func TestBuildProxyNetworkUsesPrivateTUNHelperAndIPv4Resolver(t *testing.T) {
 		Mode:            profile.NetworkModeProxy,
 		Backend:         preflight.BackendProxyTUN,
 		ProxyAlias:      "private-exit",
-		Resolver:        []byte("nameserver 10.89.0.2\n"),
+		Resolver:        []byte("nameserver 10.123.123.2\n"),
 		ProxyDNSAddress: "192.0.2.53",
 	})
 	if err != nil {
@@ -187,7 +187,7 @@ func TestBuildProxyNetworkWithPortsUsesGuardedIngressHelper(t *testing.T) {
 		ForwarderExecutable: "/usr/bin/pasta",
 		EnforceEgressFilter: true,
 		ProxyAlias:          "private-exit",
-		Resolver:            []byte("nameserver 10.89.0.2\n"),
+		Resolver:            []byte("nameserver 10.123.123.2\n"),
 		ProxyDNSAddress:     "192.0.2.53",
 	})
 	if err != nil {

@@ -10,11 +10,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"strings"
 
 	"github.com/arwos/isobox/internal/integration"
 	"github.com/arwos/isobox/internal/limits"
+	"github.com/arwos/isobox/internal/networkmanager"
 	"github.com/arwos/isobox/internal/preflight"
 	"github.com/arwos/isobox/internal/processlist"
 	"github.com/arwos/isobox/internal/profile"
@@ -125,13 +127,85 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
 	}
-	if effectiveProfile.NetworkMode == profile.NetworkModeProxy {
+	memberContext, attachments, hostUID, hostGID, err := networkmanager.MemberRuntime()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "isobox run: %v\n", err)
+		return 125
+	}
+	if len(effectiveProfile.Network.Groups) != 0 {
+		if options.AppID == "" {
+			_, _ = fmt.Fprintln(stderr, "isobox run: --app-id is required when network.group is configured because app-id is published in group DNS")
+			return 2
+		}
+		if effectiveProfile.Network.InterfaceName != "" || effectiveProfile.Network.Subnet != "" {
+			_, _ = fmt.Fprintln(stderr, "isobox run: network.interface and network.subnet cannot be combined with named group networks")
+			return 2
+		}
+		if len(effectiveProfile.Network.Ports) != 0 {
+			_, _ = fmt.Fprintln(stderr, "isobox run: named group networks do not yet support published ports")
+			return 2
+		}
+		if !memberContext {
+			stdin := os.Stdin
+			stdoutFile, stdoutOK := stdout.(*os.File)
+			stderrFile, stderrOK := stderr.(*os.File)
+			if !stdoutOK || !stderrOK {
+				_, _ = fmt.Fprintln(stderr, "isobox run: grouped launches require file-backed standard streams")
+				return 2
+			}
+			var startTunnel networkmanager.MemberTunnelStarter
+			if effectiveProfile.NetworkMode == profile.NetworkModeProxy || effectiveProfile.NetworkMode == profile.NetworkModeEgress || effectiveProfile.NetworkMode == profile.NetworkModeDirect {
+				if effectiveProfile.NetworkMode == profile.NetworkModeProxy {
+					if err := inspectAndWarnProxy(effectiveProfile.Network.ProxyAlias, stderr); err != nil {
+						_, _ = fmt.Fprintf(stderr, "isobox run: %v\n", err)
+						return 2
+					}
+				}
+				capabilities, preflightErr := preflight.Check(effectiveProfile)
+				if preflightErr != nil {
+					_, _ = fmt.Fprintf(stderr, "isobox run: %v\n", preflightErr)
+					return 2
+				}
+				network, prepareErr := sandbox.PrepareNetwork(capabilities.Network, capabilities.Pasta, capabilities.Slirp4netns, effectiveProfile.Network)
+				if prepareErr != nil {
+					_, _ = fmt.Fprintf(stderr, "isobox run: cannot prepare network: %v\n", prepareErr)
+					return 2
+				}
+				network.SharedNamespace = true
+				startTunnel = func(tunFile *os.File, info networkmanager.MemberTUNInfo) (networkmanager.MemberTunnel, error) {
+					if effectiveProfile.NetworkMode == profile.NetworkModeDirect {
+						return sandbox.StartSharedDirectBackend(network, info)
+					}
+					return sandbox.StartSharedTUNDataPlane(tunFile, network, info, options.AppID)
+				}
+			}
+			exitCode, runErr := networkmanager.RunJoined(effectiveProfile.Network.Groups, effectiveProfile.Network.Aliases, options.AppID, args, os.Environ(), stdin, stdoutFile, stderrFile, startTunnel)
+			if runErr != nil {
+				_, _ = fmt.Fprintf(stderr, "isobox run: grouped launch failed: %v\n", runErr)
+				return 125
+			}
+			return exitCode
+		}
+		if !sameNetworkGroups(effectiveProfile.Network.Groups, attachments) {
+			_, _ = fmt.Fprintln(stderr, "isobox run: manager group assignments do not match the profile")
+			return 125
+		}
+	} else if memberContext {
+		_, _ = fmt.Fprintln(stderr, "isobox run: manager supplied group interfaces for a profile without network.group")
+		return 125
+	}
+	if effectiveProfile.NetworkMode == profile.NetworkModeProxy && !memberContext {
 		if err := inspectAndWarnProxy(effectiveProfile.Network.ProxyAlias, stderr); err != nil {
 			_, _ = fmt.Fprintf(stderr, "isobox run: %v\n", err)
 			return 2
 		}
 	}
-	capabilities, err := preflight.Check(effectiveProfile)
+	var capabilities preflight.Capabilities
+	if memberContext {
+		capabilities, err = preflight.CheckInRootlessUserNamespace(effectiveProfile)
+	} else {
+		capabilities, err = preflight.Check(effectiveProfile)
+	}
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "isobox run: %v\n", err)
 		return 2
@@ -140,6 +214,54 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "isobox run: cannot prepare network: %v\n", err)
 		return 2
+	}
+	if memberContext {
+		network.SharedNamespace = true
+		network.BackendNamespacePID = attachments[0].NamespacePID
+		network.HostUID, network.HostGID, network.HasHostIdentity = hostUID, hostGID, true
+		for _, attachment := range attachments {
+			address, parseErr := netip.ParseAddr(attachment.Address)
+			if parseErr != nil || !address.Is4() {
+				_, _ = fmt.Fprintf(stderr, "isobox run: invalid group address for %q: %q\n", attachment.Group, attachment.Address)
+				return 125
+			}
+			network.GroupSubnets = append(network.GroupSubnets, netip.PrefixFrom(address, attachment.Prefix).Masked().String())
+		}
+		switch effectiveProfile.NetworkMode {
+		case profile.NetworkModeProxy, profile.NetworkModeEgress:
+			tunFile, tunInfo, tunErr := sandbox.ConfigureSharedTUN(&network)
+			if tunErr == nil {
+				tunErr = networkmanager.SubmitMemberTUN(tunFile, tunInfo)
+				_ = tunFile.Close()
+			}
+			if tunErr != nil {
+				err = tunErr
+			}
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "isobox run: cannot prepare grouped %s policy tunnel: %v\n", effectiveProfile.NetworkMode, err)
+				return 125
+			}
+			network.SharedTunnel = true
+		case profile.NetworkModeDirect:
+			if err := networkmanager.SubmitMemberBackend(networkmanager.MemberTUNInfo{BackendNamespacePID: network.BackendNamespacePID}); err != nil {
+				_, _ = fmt.Fprintf(stderr, "isobox run: cannot start grouped direct network backend: %v\n", err)
+				return 125
+			}
+			network.SharedTunnel = true
+		}
+		resolverEndpoint := ""
+		switch effectiveProfile.NetworkMode {
+		case profile.NetworkModeProxy, profile.NetworkModeEgress:
+			resolverEndpoint = network.ResolverEndpoint
+		}
+		stopDNS, dnsErr := networkmanager.StartMemberDNS(networkmanager.MemberDNSConfig{
+			Mode: effectiveProfile.NetworkMode, Upstreams: network.DNSAddresses, ResolverEndpoint: resolverEndpoint,
+		})
+		if dnsErr != nil {
+			_, _ = fmt.Fprintf(stderr, "isobox run: cannot start group DNS resolver: %v\n", dnsErr)
+			return 125
+		}
+		defer stopDNS()
 	}
 	command, err := sandbox.BuildCommand(capabilities.Bubblewrap, capabilities.NFT, effectiveProfile, options.ProfilePath, options.AppID, options.Command, network)
 	if err != nil {
@@ -155,7 +277,7 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 	command.Env = setEnvironmentValue(command.Env, processlist.EnvNetwork, string(effectiveProfile.NetworkMode))
 
 	var exitCode int
-	if network.Backend != preflight.BackendNone || network.PortForwarder != preflight.BackendNone {
+	if (network.Backend != preflight.BackendNone || network.PortForwarder != preflight.BackendNone) && !network.SharedTunnel {
 		exitCode, err = sandbox.RunWithNetwork(command, network, effectiveProfile.Network.Ports, effectiveProfile.Limits, capabilities.SystemdRun)
 	} else if limits.Any(effectiveProfile.Limits) {
 		exitCode, err = sandbox.RunWithLimits(command, effectiveProfile.Limits, capabilities.SystemdRun)
@@ -167,6 +289,18 @@ func executeRun(args []string, stdout, stderr io.Writer) int {
 		return 125
 	}
 	return exitCode
+}
+
+func sameNetworkGroups(groups []string, attachments []networkmanager.MemberAttachment) bool {
+	if len(groups) != len(attachments) {
+		return false
+	}
+	for index, group := range groups {
+		if attachments[index].Group != group {
+			return false
+		}
+	}
+	return true
 }
 
 func setEnvironmentValue(environment []string, name, value string) []string {

@@ -23,8 +23,15 @@ import (
 // bubblewrap builder and network-process supervisor.
 type NetworkRuntime struct {
 	Mode                profile.NetworkMode
+	SharedNamespace     bool
+	SharedTunnel        bool
+	BackendNamespacePID int
+	HostUID             int
+	HostGID             int
+	HasHostIdentity     bool
 	InterfaceName       string
 	Subnet              string
+	GroupSubnets        []string
 	GuestAddress        string
 	GatewayAddress      string
 	ResolverEndpoint    string
@@ -33,6 +40,7 @@ type NetworkRuntime struct {
 	Executable          string
 	ForwarderExecutable string
 	Resolver            []byte
+	DNSAddresses        []string
 	ProxyDNSAddress     string
 	ProxyDNSAddresses   []string
 	ProxyAlias          string
@@ -67,13 +75,14 @@ func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath s
 		ProxyAlias:          selection.ProxyAlias,
 		ProxyAllowRules:     append([]profile.ProxyAllowRule(nil), selection.ProxyAllowRules...),
 		ResolverRecords:     append([]profile.ResolverRecord(nil), selection.ResolverRecords...),
+		DNSAddresses:        append([]string(nil), selectedDNSAddresses(selection)...),
 		FallbackReason:      selection.FallbackReason,
 		InterfaceName:       config.InterfaceName,
 		Subnet:              config.Subnet,
 	}
 	backend := runtime.activeBackend()
 	if backend == preflight.BackendProxyTUN {
-		runtime.GatewayAddress = "10.89.0.3"
+		runtime.GatewayAddress = "10.123.123.3"
 		runtime.ResolverEndpoint = proxy.TransparentDNSAddress
 		if runtime.InterfaceName == "" {
 			runtime.InterfaceName = proxyTUNName
@@ -190,6 +199,7 @@ func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath s
 		return NetworkRuntime{}, err
 	}
 	runtime.Resolver = []byte(resolver)
+	runtime.DNSAddresses = resolverNameservers(runtime.Resolver)
 	runtime.PastaDNSArgs = pastaArgs
 	if selection.FallbackNetwork != "" && selection.FallbackNetwork != preflight.BackendNone {
 		fallback := NetworkRuntime{
@@ -213,7 +223,9 @@ func PrepareNetwork(selection preflight.BackendSelection, pastaPath, slirpPath s
 			return NetworkRuntime{}, err
 		}
 		fallback.Resolver = []byte(fallbackResolver)
+		fallback.DNSAddresses = resolverNameservers(fallback.Resolver)
 		runtime.Resolver = combineResolverConfigs(runtime.Resolver, fallback.Resolver)
+		runtime.DNSAddresses = resolverNameservers(runtime.Resolver)
 		runtime.Fallback = &fallback
 	}
 	return runtime, nil
