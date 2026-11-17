@@ -10,9 +10,9 @@ require (
 )
 
 require (
-	github.com/google/btree v1.1.2 // indirect
+	github.com/google/btree v1.1.3 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
-	go.osspkg.com/bb v1.0.1 // indirect
-	golang.org/x/exp v0.0.0-20250711185948-6ae5c78190dc // indirect
-	golang.org/x/time v0.15.0 // indirect
+	go.osspkg.com/bb v1.0.3 // indirect
+	golang.org/x/exp v0.0.0-20261113113407-e3970619a1a4 // indirect
+	golang.org/x/time v0.16.0 // indirect
 )
